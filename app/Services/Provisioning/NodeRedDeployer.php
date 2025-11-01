@@ -437,7 +437,34 @@ class NodeRedDeployer
         try {
             $instancePath = "{$this->noderedPath}/{$instance->slug}";
             $result = $this->ssh->execute("cd {$instancePath} && docker compose up -d");
-            return $result->isSuccess();
+            
+            if (!$result->isSuccess()) {
+                Log::error('Failed to start Node-RED container', [
+                    'instance_id' => $instance->id,
+                    'error' => $result->getErrorOutput(),
+                ]);
+                return false;
+            }
+
+            // Wait for Node-RED to be ready (check logs for "Started flows")
+            Log::info('Waiting for Node-RED instance to be ready', [
+                'instance_id' => $instance->id,
+            ]);
+
+            $ready = $this->waitForReady($instance, 120);
+            
+            if (!$ready) {
+                Log::error('Node-RED instance did not become ready within timeout', [
+                    'instance_id' => $instance->id,
+                ]);
+                return false;
+            }
+
+            Log::info('Node-RED instance started and ready', [
+                'instance_id' => $instance->id,
+            ]);
+
+            return true;
         } catch (\Exception $e) {
             Log::error('Failed to start Node-RED instance', [
                 'instance_id' => $instance->id,
@@ -455,7 +482,34 @@ class NodeRedDeployer
         try {
             $instancePath = "{$this->noderedPath}/{$instance->slug}";
             $result = $this->ssh->execute("cd {$instancePath} && docker compose restart");
-            return $result->isSuccess();
+            
+            if (!$result->isSuccess()) {
+                Log::error('Failed to restart Node-RED container', [
+                    'instance_id' => $instance->id,
+                    'error' => $result->getErrorOutput(),
+                ]);
+                return false;
+            }
+
+            // Wait for Node-RED to be ready (check logs for "Started flows")
+            Log::info('Waiting for Node-RED instance to be ready after restart', [
+                'instance_id' => $instance->id,
+            ]);
+
+            $ready = $this->waitForReady($instance, 120);
+            
+            if (!$ready) {
+                Log::error('Node-RED instance did not become ready within timeout after restart', [
+                    'instance_id' => $instance->id,
+                ]);
+                return false;
+            }
+
+            Log::info('Node-RED instance restarted and ready', [
+                'instance_id' => $instance->id,
+            ]);
+
+            return true;
         } catch (\Exception $e) {
             Log::error('Failed to restart Node-RED instance', [
                 'instance_id' => $instance->id,
