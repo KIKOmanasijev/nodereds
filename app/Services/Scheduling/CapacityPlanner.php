@@ -186,6 +186,14 @@ class CapacityPlanner
                 'provisioned_at' => now(),
             ]);
 
+            // Wait additional time for server to fully boot and SSH to be ready
+            // Hetzner API might report "running" but SSH may not be ready yet
+            Log::info('Waiting for server to be fully ready before bootstrapping', [
+                'server_id' => $server->id,
+                'wait_seconds' => 60,
+            ]);
+            sleep(60); // Wait 60 seconds for server to fully boot and SSH to be available
+
             // Dispatch provisioning job to bootstrap Traefik
             ProvisionServerJob::dispatch($server->id);
 

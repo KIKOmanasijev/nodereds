@@ -109,9 +109,23 @@ class DeployNodeRedInstanceJob implements ShouldQueue
 
             // Wait for server to be active (if provisioning)
             if ($instance->server->status === 'provisioning') {
-                // Check how long the server has been provisioning (max 10 minutes)
+                // Check how long the server has been provisioning (max 15 minutes)
                 $provisioningSince = $instance->server->provisioned_at ?? $instance->server->created_at;
                 $waitTime = now()->diffInSeconds($provisioningSince);
+                
+                // Minimum wait time: 1 minute after server creation for SSH to be ready
+                $minWaitTime = 60;
+                if ($waitTime < $minWaitTime) {
+                    $remainingWait = $minWaitTime - $waitTime;
+                    Log::info('Server is too new, waiting for minimum boot time', [
+                        'instance_id' => $instance->id,
+                        'server_id' => $instance->server->id,
+                        'wait_time_seconds' => $waitTime,
+                        'remaining_wait_seconds' => $remainingWait,
+                    ]);
+                    $this->release($remainingWait);
+                    return;
+                }
                 
                 if ($waitTime > 600) { // 10 minutes max wait
                     throw new \RuntimeException('Server provisioning timeout after ' . $waitTime . ' seconds. Server status: ' . $instance->server->status);
@@ -124,8 +138,8 @@ class DeployNodeRedInstanceJob implements ShouldQueue
                     'wait_time_seconds' => $waitTime,
                 ]);
 
-                // Release job back to queue with a delay (30 seconds)
-                $this->release(30);
+                // Release job back to queue with a longer delay (60 seconds) for provisioning servers
+                $this->release(60);
                 return;
             }
 
