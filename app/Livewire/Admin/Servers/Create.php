@@ -166,7 +166,7 @@ class Create extends Component
 
             session()->flash('message', 'Server created successfully. Provisioning started.');
 
-            $this->redirect(route('admin.servers.show', $server), navigate: true);
+            $this->redirect(route('admin.servers.index'), navigate: true);
         } catch (\Exception $e) {
             Log::error('Failed to create server via wizard', [
                 'server_type' => $this->serverType,
