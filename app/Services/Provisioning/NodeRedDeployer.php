@@ -560,6 +560,7 @@ class NodeRedDeployer
     {
         $start = time();
         $instancePath = "{$this->noderedPath}/{$instance->slug}";
+        $containerName = "nodered_{$instance->slug}";
         $lastErrorLog = '';
         $hasStartedFlows = false;
 
@@ -575,35 +576,75 @@ class NodeRedDeployer
                     continue;
                 }
 
-                // Check container logs for errors and success messages
-                $logsResult = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose logs --tail 50 nodered 2>&1", false);
-                $logs = $logsResult->getOutput();
+                // Check container health status first (if health check is configured)
+                $healthResult = $this->ssh->execute("docker inspect --format='{{.State.Health.Status}}' {$containerName} 2>&1", false);
+                $healthStatus = trim($healthResult->getOutput());
                 
-                // Check for critical errors in logs
-                if (str_contains($logs, 'Error loading settings file') || 
-                    str_contains($logs, 'SyntaxError') ||
-                    str_contains($logs, 'ReferenceError') ||
-                    str_contains($logs, 'TypeError')) {
-                    $lastErrorLog = $logs;
-                    throw new \RuntimeException('Node-RED failed to start due to configuration error. Check logs for details.');
+                // If health check is configured and shows "healthy", we're ready
+                if ($healthStatus === 'healthy') {
+                    Log::info('Node-RED instance is healthy', [
+                        'instance_id' => $instance->id,
+                        'container_name' => $containerName,
+                        'health_status' => $healthStatus,
+                    ]);
+                    return true;
                 }
-                
-                // Check if Node-RED has started successfully
-                if (str_contains($logs, 'Started flows') || str_contains($logs, 'Server now running')) {
-                    $hasStartedFlows = true;
+
+                // If health check exists but isn't healthy yet, check what state it's in
+                if ($healthStatus === 'starting' || $healthStatus === 'unhealthy') {
+                    // If unhealthy, check logs for errors
+                    if ($healthStatus === 'unhealthy') {
+                        $logsResult = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose logs --tail 50 nodered 2>&1", false);
+                        $logs = $logsResult->getOutput();
+                        
+                        // Check for critical errors
+                        if (str_contains($logs, 'Error loading settings file') || 
+                            str_contains($logs, 'SyntaxError') ||
+                            str_contains($logs, 'ReferenceError') ||
+                            str_contains($logs, 'TypeError')) {
+                            $lastErrorLog = $logs;
+                            throw new \RuntimeException('Node-RED failed to start due to configuration error. Check logs for details.');
+                        }
+                    }
+                    // Still starting or unhealthy, wait and continue
+                    sleep(3);
+                    continue;
+                }
+
+                // If health check is not configured (empty or "no value"), fall back to log checking
+                // This handles cases where health checks aren't configured in docker-compose.yml
+                if (empty($healthStatus) || $healthStatus === '<no value>') {
+                    // Check container logs for errors and success messages
+                    $logsResult = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose logs --tail 50 nodered 2>&1", false);
+                    $logs = $logsResult->getOutput();
                     
-                    // Verify container is still running
-                    $statusResult = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose ps -q nodered", false);
-                    $containerId = trim($statusResult->getOutput());
+                    // Check for critical errors in logs
+                    if (str_contains($logs, 'Error loading settings file') || 
+                        str_contains($logs, 'SyntaxError') ||
+                        str_contains($logs, 'ReferenceError') ||
+                        str_contains($logs, 'TypeError')) {
+                        $lastErrorLog = $logs;
+                        throw new \RuntimeException('Node-RED failed to start due to configuration error. Check logs for details.');
+                    }
                     
-                    if (!empty($containerId)) {
-                        Log::info('Node-RED instance started successfully', [
-                            'instance_id' => $instance->id,
-                            'container_id' => $containerId,
-                        ]);
-                        return true;
+                    // Check if Node-RED has started successfully
+                    if (str_contains($logs, 'Started flows') || str_contains($logs, 'Server now running')) {
+                        $hasStartedFlows = true;
+                        
+                        // Verify container is still running
+                        $statusResult = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose ps -q nodered", false);
+                        $containerId = trim($statusResult->getOutput());
+                        
+                        if (!empty($containerId)) {
+                            Log::info('Node-RED instance started successfully (no health check configured)', [
+                                'instance_id' => $instance->id,
+                                'container_id' => $containerId,
+                            ]);
+                            return true;
+                        }
                     }
                 }
+
             } catch (\Exception $e) {
                 // If we got an error from logs check, throw it immediately
                 if ($lastErrorLog) {
@@ -615,9 +656,21 @@ class NodeRedDeployer
             sleep(3);
         }
 
-        // If we found "Started flows" but timed out, it might be that HTTPS isn't ready yet
+        // Check final health status one more time before giving up
+        $healthResult = $this->ssh->execute("docker inspect --format='{{.State.Health.Status}}' {$containerName} 2>&1", false);
+        $healthStatus = trim($healthResult->getOutput());
+        
+        if ($healthStatus === 'healthy') {
+            Log::info('Node-RED instance became healthy after timeout check', [
+                'instance_id' => $instance->id,
+                'container_name' => $containerName,
+            ]);
+            return true;
+        }
+
+        // If we found "Started flows" but timed out and no health check, it might be that HTTPS isn't ready yet
         // In that case, consider it successful since Node-RED itself is running
-        if ($hasStartedFlows) {
+        if ($hasStartedFlows && (empty($healthStatus) || $healthStatus === '<no value>')) {
             Log::warning('Node-RED started but HTTPS check timed out - Node-RED is running internally', [
                 'instance_id' => $instance->id,
                 'fqdn' => $instance->fqdn,
