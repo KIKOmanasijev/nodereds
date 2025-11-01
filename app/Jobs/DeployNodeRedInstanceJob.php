@@ -199,6 +199,33 @@ class DeployNodeRedInstanceJob implements ShouldQueue
                 $instance->update(['credential_secret' => Str::random(32)]);
             }
 
+            // Ensure Traefik is running before deploying Node-RED
+            $traefikPath = config('provisioning.docker.traefik_path', '/opt/traefik');
+            $traefikCheck = (new \App\Services\SSH\Ssh($instance->server->public_ip))->execute("cd {$traefikPath} && docker compose ps -q traefik", false);
+            $traefikRunning = $traefikCheck->isSuccess() && !empty(trim($traefikCheck->getOutput()));
+
+            if (!$traefikRunning) {
+                Log::info('Traefik is not running, bootstrapping Traefik before deploying Node-RED instance', [
+                    'instance_id' => $instance->id,
+                    'server_id' => $instance->server->id,
+                ]);
+
+                $bootstrapper = new \App\Services\Provisioning\TraefikBootstrapper($instance->server);
+                $bootstrapSuccess = $bootstrapper->bootstrap();
+
+                if (!$bootstrapSuccess) {
+                    throw new \RuntimeException('Traefik bootstrap failed. Cannot deploy Node-RED instance without Traefik running.');
+                }
+
+                Log::info('Traefik bootstrapped successfully, proceeding with Node-RED deployment', [
+                    'instance_id' => $instance->id,
+                    'server_id' => $instance->server->id,
+                ]);
+
+                // Wait a moment for Traefik to fully start
+                sleep(5);
+            }
+
             // Deploy Node-RED
             $deployer = new NodeRedDeployer($instance->server);
             $deploySuccess = $deployer->deploy($instance);

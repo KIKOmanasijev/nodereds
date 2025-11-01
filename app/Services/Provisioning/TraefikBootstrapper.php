@@ -27,6 +27,9 @@ class TraefikBootstrapper
                 'server_host' => $this->ssh->getHost(),
             ]);
 
+            // Setup SSH key first to ensure we can connect
+            $this->setupSshKey();
+
             // Install Docker if not present
             if (!$this->isDockerInstalled()) {
                 Log::info('Docker not found, installing...', [
@@ -75,6 +78,85 @@ class TraefikBootstrapper
                 'trace' => $e->getTraceAsString(),
             ]);
             return false;
+        }
+    }
+
+    /**
+     * Setup SSH key on the server by adding it to authorized_keys.
+     * This ensures we can connect via SSH without manual intervention.
+     * Note: This only works if SSH is already possible (e.g., via Hetzner's cloud-init or password).
+     * If Hetzner added the SSH key during server creation, this will be a no-op.
+     */
+    private function setupSshKey(): void
+    {
+        $privateKeyPath = config('provisioning.ssh.private_key_path');
+        $publicKeyPath = $privateKeyPath . '.pub';
+
+        if (!file_exists($publicKeyPath)) {
+            Log::warning('SSH public key not found, skipping SSH key setup', [
+                'server_host' => $this->ssh->getHost(),
+                'public_key_path' => $publicKeyPath,
+            ]);
+            return;
+        }
+
+        $publicKey = trim(file_get_contents($publicKeyPath));
+        if (empty($publicKey)) {
+            Log::warning('SSH public key is empty, skipping SSH key setup', [
+                'server_host' => $this->ssh->getHost(),
+            ]);
+            return;
+        }
+
+        Log::info('Ensuring SSH key is set up on server', [
+            'server_host' => $this->ssh->getHost(),
+        ]);
+
+        try {
+            // Ensure .ssh directory exists
+            $this->ssh->execute("mkdir -p ~/.ssh", false);
+            $this->ssh->execute("chmod 700 ~/.ssh", false);
+
+            // Check if key is already in authorized_keys
+            $checkKey = $this->ssh->execute("grep -Fx '{$publicKey}' ~/.ssh/authorized_keys", false);
+            
+            if (!$checkKey->isSuccess()) {
+                // Key not found, add it
+                Log::info('Adding SSH public key to authorized_keys', [
+                    'server_host' => $this->ssh->getHost(),
+                ]);
+                
+                // Append key to authorized_keys
+                $addKey = $this->ssh->execute("echo '{$publicKey}' >> ~/.ssh/authorized_keys", false);
+                
+                if ($addKey->isSuccess()) {
+                    // Set proper permissions
+                    $this->ssh->execute("chmod 600 ~/.ssh/authorized_keys", false);
+                    
+                    Log::info('SSH key added successfully', [
+                        'server_host' => $this->ssh->getHost(),
+                    ]);
+                } else {
+                    Log::warning('Failed to add SSH key (may already be there via Hetzner)', [
+                        'server_host' => $this->ssh->getHost(),
+                        'error' => $addKey->getErrorOutput(),
+                    ]);
+                }
+            } else {
+                Log::info('SSH key already exists in authorized_keys', [
+                    'server_host' => $this->ssh->getHost(),
+                ]);
+            }
+        } catch (\Exception $e) {
+            // If SSH key setup fails, it might be because:
+            // 1. Hetzner already added it (good!)
+            // 2. We can't SSH yet (server still booting)
+            // 3. Some other issue
+            // Log warning but continue - if Hetzner added it, SSH will work anyway
+            Log::warning('SSH key setup failed (may already be configured via Hetzner)', [
+                'server_host' => $this->ssh->getHost(),
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 
