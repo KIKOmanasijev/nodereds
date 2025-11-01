@@ -127,6 +127,9 @@ class NodeRedDeployer
             // Start the container
             $this->startContainer($instancePath);
 
+            // Verify container is on the edge network
+            $this->verifyNetworkConnectivity($instancePath, $instance);
+
             // Wait for Node-RED to be ready and verify it started successfully
             $ready = $this->waitForReady($instance);
             
@@ -605,6 +608,84 @@ class NodeRedDeployer
             return !empty($output);
         } catch (\Exception $e) {
             return false;
+        }
+    }
+
+    /**
+     * Verify container is on the edge network and Traefik can discover it.
+     */
+    private function verifyNetworkConnectivity(string $instancePath, NodeRedInstance $instance): void
+    {
+        $networkName = config('provisioning.docker.network_name', 'edge');
+        $containerName = "nodered_{$instance->slug}";
+
+        // Check if edge network exists
+        $networkCheck = $this->ssh->execute("docker network inspect {$networkName}", false);
+        if (!$networkCheck->isSuccess()) {
+            Log::warning('Edge network does not exist, creating it', [
+                'instance_id' => $instance->id,
+                'network_name' => $networkName,
+            ]);
+            $createResult = $this->ssh->execute("docker network create {$networkName}");
+            if (!$createResult->isSuccess()) {
+                throw new \RuntimeException("Failed to create edge network: {$networkName}");
+            }
+        }
+
+        // Check if container is on the network
+        $networkInspect = $this->ssh->execute("docker network inspect {$networkName}", false);
+        if ($networkInspect->isSuccess()) {
+            $networkData = json_decode($networkInspect->getOutput(), true);
+            $containers = $networkData[0]['Containers'] ?? [];
+            $containerFound = false;
+            
+            foreach ($containers as $container) {
+                if (isset($container['Name']) && $container['Name'] === $containerName) {
+                    $containerFound = true;
+                    break;
+                }
+            }
+
+            if (!$containerFound) {
+                Log::warning('Container not found on edge network, attempting to connect', [
+                    'instance_id' => $instance->id,
+                    'container_name' => $containerName,
+                    'network_name' => $networkName,
+                ]);
+                
+                // Connect container to network
+                $connectResult = $this->ssh->execute("docker network connect {$networkName} {$containerName}", false);
+                if (!$connectResult->isSuccess()) {
+                    Log::error('Failed to connect container to edge network', [
+                        'instance_id' => $instance->id,
+                        'container_name' => $containerName,
+                        'error' => $connectResult->getErrorOutput(),
+                    ]);
+                    // Don't throw - container might already be connected or compose handled it
+                } else {
+                    Log::info('Container connected to edge network', [
+                        'instance_id' => $instance->id,
+                        'container_name' => $containerName,
+                    ]);
+                }
+            }
+        }
+
+        // Check if Traefik is running
+        $traefikPath = config('provisioning.docker.traefik_path', '/opt/traefik');
+        $traefikCheck = $this->ssh->execute("cd {$traefikPath} && docker compose ps -q traefik", false);
+        if (!$traefikCheck->isSuccess() || empty(trim($traefikCheck->getOutput()))) {
+            Log::warning('Traefik is not running', [
+                'instance_id' => $instance->id,
+                'traefik_path' => $traefikPath,
+            ]);
+            // Don't throw - Traefik might start later
+        } else {
+            Log::info('Traefik is running and should discover container', [
+                'instance_id' => $instance->id,
+                'container_name' => $containerName,
+                'fqdn' => $instance->fqdn,
+            ]);
         }
     }
 
