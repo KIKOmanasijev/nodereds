@@ -40,15 +40,29 @@ class HetznerClient
 
         // Get SSH keys - either from config or fetch by name
         $sshKeys = $config['ssh_keys'] ?? [];
+        $sshKeyName = config('provisioning.hetzner.ssh_key_name', 'provision-key');
+        
         if (empty($sshKeys)) {
-            $sshKeyName = config('provisioning.hetzner.ssh_key_name', 'provision-key');
+            Log::info('Looking up SSH key for server creation', [
+                'ssh_key_name' => $sshKeyName,
+            ]);
+            
             $sshKeyId = $this->getSshKeyIdByName($sshKeyName);
             if ($sshKeyId) {
                 $sshKeys = [(string) $sshKeyId];
+                Log::info('SSH key found', [
+                    'ssh_key_name' => $sshKeyName,
+                    'ssh_key_id' => $sshKeyId,
+                ]);
             } else {
                 // Get available SSH keys for better error message
                 $availableKeys = $this->getAllSshKeys();
                 $availableKeyNames = array_column($availableKeys, 'name');
+                
+                Log::error('SSH key not found in Hetzner Cloud', [
+                    'requested_key_name' => $sshKeyName,
+                    'available_keys' => $availableKeyNames,
+                ]);
                 
                 throw new \RuntimeException(
                     "SSH key '{$sshKeyName}' not found in Hetzner Cloud. " .
@@ -56,6 +70,10 @@ class HetznerClient
                     "Please set HETZNER_SSH_KEY_NAME in your .env file to match one of these names, or add the SSH key '{$sshKeyName}' to Hetzner Cloud."
                 );
             }
+        } else {
+            Log::info('Using SSH keys provided in config', [
+                'ssh_keys' => $sshKeys,
+            ]);
         }
 
         $payload = [
@@ -86,6 +104,15 @@ class HetznerClient
         // Remove null values
         $payload = array_filter($payload, fn($value) => $value !== null);
 
+        // Log the complete server creation payload for debugging
+        Log::info('Creating Hetzner server with payload', [
+            'payload' => $payload,
+            'payload_json' => json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+            'ssh_keys' => $sshKeys,
+            'ssh_key_name' => $sshKeyName,
+            'config' => $config,
+        ]);
+
         $url = $this->baseUrl . '/servers';
         $this->logRequest('POST', $url, $payload);
 
@@ -97,6 +124,8 @@ class HetznerClient
             Log::error('Hetzner API error creating server', [
                 'status' => $response->status(),
                 'body' => $response->body(),
+                'payload' => $payload,
+                'payload_json' => json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
             ]);
             throw new \RuntimeException('Failed to create Hetzner server: ' . $response->body());
         }

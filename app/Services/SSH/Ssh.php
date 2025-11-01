@@ -21,8 +21,26 @@ class Ssh
         $this->timeout = $timeout ?? config('provisioning.ssh.timeout', 30);
         $this->port = $port;
 
-        if (empty($this->privateKeyPath) || !file_exists($this->privateKeyPath)) {
-            throw new \RuntimeException("SSH private key not found at: {$this->privateKeyPath}");
+        if (empty($this->privateKeyPath)) {
+            throw new \RuntimeException("SSH private key path is not configured. Please set SSH_PRIVATE_KEY_PATH in .env");
+        }
+
+        if (!file_exists($this->privateKeyPath)) {
+            throw new \RuntimeException(
+                "SSH private key not found at: {$this->privateKeyPath}\n" .
+                "Generate a key pair with: ssh-keygen -t ed25519 -f {$this->privateKeyPath} -N ''\n" .
+                "Then add public key to Hetzner: php artisan ssh:add-to-hetzner"
+            );
+        }
+
+        // Check key permissions
+        $keyPermissions = substr(sprintf('%o', fileperms($this->privateKeyPath)), -4);
+        if ($keyPermissions !== '0600' && $keyPermissions !== '0400') {
+            Log::warning('SSH key permissions may be insecure', [
+                'path' => $this->privateKeyPath,
+                'permissions' => $keyPermissions,
+                'recommended' => '0600',
+            ]);
         }
     }
 
@@ -43,13 +61,33 @@ class Ssh
         );
 
         if ($throwOnError && !$result->isSuccess()) {
+            $errorMessage = $result->errorOutput;
+            $diagnostics = '';
+            
+            // Provide helpful diagnostics for common errors
+            if (str_contains($errorMessage, 'Permission denied')) {
+                $publicKeyPath = $this->privateKeyPath . '.pub';
+                $publicKey = file_exists($publicKeyPath) ? trim(file_get_contents($publicKeyPath)) : 'N/A';
+                
+                $diagnostics = "\n\nTroubleshooting:\n";
+                $diagnostics .= "1. Verify SSH key exists: " . ($this->privateKeyPath) . "\n";
+                $diagnostics .= "2. Add public key to server's authorized_keys:\n";
+                $diagnostics .= "   ssh root@{$this->host}\n";
+                $diagnostics .= "   mkdir -p ~/.ssh\n";
+                $diagnostics .= "   echo '{$publicKey}' >> ~/.ssh/authorized_keys\n";
+                $diagnostics .= "   chmod 600 ~/.ssh/authorized_keys\n";
+                $diagnostics .= "   chmod 700 ~/.ssh\n";
+                $diagnostics .= "3. Test connection: php artisan ssh:test\n";
+            }
+            
             Log::error('SSH command failed', [
                 'host' => $this->host,
                 'command' => $command,
                 'exit_code' => $result->exitCode,
-                'error' => $result->errorOutput,
+                'error' => $errorMessage,
             ]);
-            throw new \RuntimeException("SSH command failed: {$command}\nError: {$result->errorOutput}");
+            
+            throw new \RuntimeException("SSH command failed: {$command}\nError: {$errorMessage}{$diagnostics}");
         }
 
         return $result;
