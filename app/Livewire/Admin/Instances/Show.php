@@ -318,6 +318,43 @@ class Show extends Component
         $this->syncUsersAndRestart();
     }
 
+    public function fixNetwork(): void
+    {
+        Gate::authorize('update', $this->instance);
+
+        if (!$this->instance->server) {
+            $this->dispatch('notify', [
+                'type' => 'error',
+                'message' => 'Instance has no server assigned.',
+            ]);
+            return;
+        }
+
+        try {
+            $deployer = new NodeRedDeployer($this->instance->server);
+            $success = $deployer->fixNetwork($this->instance);
+
+            if ($success) {
+                $this->dispatch('notify', [
+                    'type' => 'success',
+                    'message' => 'Network connectivity fixed. Traefik has been restarted to rediscover the container.',
+                ]);
+            } else {
+                $this->dispatch('notify', [
+                    'type' => 'error',
+                    'message' => 'Failed to fix network connectivity. Check logs for details.',
+                ]);
+            }
+        } catch (\Exception $e) {
+            $this->dispatch('notify', [
+                'type' => 'error',
+                'message' => 'Error fixing network: ' . $e->getMessage(),
+            ]);
+        }
+
+        $this->instance->refresh();
+    }
+
     public function delete(): void
     {
         Gate::authorize('delete', $this->instance);

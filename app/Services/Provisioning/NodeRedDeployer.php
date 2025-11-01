@@ -690,6 +690,130 @@ class NodeRedDeployer
     }
 
     /**
+     * Fix network connectivity for an existing instance.
+     * Ensures container is on the edge network and Traefik can discover it.
+     */
+    public function fixNetwork(NodeRedInstance $instance): bool
+    {
+        try {
+            $instancePath = "{$this->noderedPath}/{$instance->slug}";
+            $networkName = config('provisioning.docker.network_name', 'edge');
+            $containerName = "nodered_{$instance->slug}";
+
+            Log::info('Fixing network connectivity for instance', [
+                'instance_id' => $instance->id,
+                'container_name' => $containerName,
+                'network_name' => $networkName,
+            ]);
+
+            // Ensure edge network exists
+            $networkCheck = $this->ssh->execute("docker network inspect {$networkName}", false);
+            if (!$networkCheck->isSuccess()) {
+                Log::info('Creating edge network', [
+                    'instance_id' => $instance->id,
+                    'network_name' => $networkName,
+                ]);
+                $createResult = $this->ssh->execute("docker network create {$networkName}");
+                if (!$createResult->isSuccess()) {
+                    throw new \RuntimeException("Failed to create edge network: {$networkName}");
+                }
+            }
+
+            // Check if container exists
+            $containerCheck = $this->ssh->execute("docker ps -a --filter name={$containerName} --format '{{.Names}}'", false);
+            $containerExists = !empty(trim($containerCheck->getOutput()));
+
+            if (!$containerExists) {
+                Log::warning('Container does not exist, cannot fix network', [
+                    'instance_id' => $instance->id,
+                    'container_name' => $containerName,
+                ]);
+                return false;
+            }
+
+            // Check if container is running
+            $runningCheck = $this->ssh->execute("docker ps --filter name={$containerName} --format '{{.Names}}'", false);
+            $isRunning = !empty(trim($runningCheck->getOutput()));
+
+            // Check if container is on the network
+            $networkInspect = $this->ssh->execute("docker network inspect {$networkName}", false);
+            $onNetwork = false;
+
+            if ($networkInspect->isSuccess()) {
+                $networkData = json_decode($networkInspect->getOutput(), true);
+                $containers = $networkData[0]['Containers'] ?? [];
+                
+                foreach ($containers as $container) {
+                    if (isset($container['Name']) && $container['Name'] === $containerName) {
+                        $onNetwork = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!$onNetwork) {
+                Log::info('Container not on edge network, connecting it', [
+                    'instance_id' => $instance->id,
+                    'container_name' => $containerName,
+                ]);
+                
+                // Connect container to network
+                $connectResult = $this->ssh->execute("docker network connect {$networkName} {$containerName}", false);
+                if (!$connectResult->isSuccess()) {
+                    // Check if it's already connected (error might be "already connected")
+                    if (!str_contains($connectResult->getErrorOutput(), 'already')) {
+                        throw new \RuntimeException("Failed to connect container to edge network: {$connectResult->getErrorOutput()}");
+                    }
+                }
+            }
+
+            // Restart Traefik to force it to rediscover containers
+            $traefikPath = config('provisioning.docker.traefik_path', '/opt/traefik');
+            $traefikCheck = $this->ssh->execute("cd {$traefikPath} && docker compose ps -q traefik", false);
+            
+            if ($traefikCheck->isSuccess() && !empty(trim($traefikCheck->getOutput()))) {
+                Log::info('Restarting Traefik to rediscover containers', [
+                    'instance_id' => $instance->id,
+                ]);
+                $this->ssh->execute("cd {$traefikPath} && docker compose restart traefik", false);
+            } else {
+                Log::warning('Traefik is not running, cannot restart it', [
+                    'instance_id' => $instance->id,
+                ]);
+            }
+
+            // If container wasn't running, restart it to ensure Traefik picks it up
+            if (!$isRunning) {
+                Log::info('Container was not running, starting it', [
+                    'instance_id' => $instance->id,
+                ]);
+                $this->start($instance);
+            } else {
+                // Restart container to ensure Traefik picks up the network change
+                Log::info('Restarting container to ensure Traefik picks up network change', [
+                    'instance_id' => $instance->id,
+                ]);
+                $this->restart($instance);
+            }
+
+            Log::info('Network connectivity fixed successfully', [
+                'instance_id' => $instance->id,
+                'container_name' => $containerName,
+                'network_name' => $networkName,
+            ]);
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to fix network connectivity', [
+                'instance_id' => $instance->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return false;
+        }
+    }
+
+    /**
      * Fix permissions on the data directory.
      */
     public function fixPermissions(NodeRedInstance $instance): bool

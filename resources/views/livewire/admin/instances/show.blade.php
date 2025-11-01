@@ -129,6 +129,11 @@
                                             {{ __('Restart') }}
                                         </flux:button>
                                     </div>
+                                    <div class="mt-3">
+                                        <flux:button wire:click="fixNetwork" variant="outline" size="sm" class="w-full" icon="wifi">
+                                            {{ __('Fix Network') }}
+                                        </flux:button>
+                                    </div>
                                 </div>
                             @endif
                         </div>
