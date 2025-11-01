@@ -154,7 +154,7 @@ class CloudflareDns
     /**
      * Update a DNS record.
      */
-    private function updateRecord(string $recordId, array $data): array
+    public function updateRecord(string $recordId, array $data): array
     {
         $response = $this->client->patch("/zones/{$this->zoneId}/dns_records/{$recordId}", $data);
 

@@ -5,9 +5,12 @@ namespace App\Livewire\Admin\Instances;
 use App\Jobs\DeployNodeRedInstanceJob;
 use App\Jobs\DeleteNodeRedInstanceJob;
 use App\Jobs\ManageNodeRedInstanceJob;
+use App\Jobs\MoveNodeRedInstanceJob;
 use App\Jobs\SyncNodeRedUsersJob;
+use App\Jobs\UpdateNodeRedInstanceNameJob;
 use App\Models\NodeRedInstance;
 use App\Models\NodeRedUser;
+use App\Models\Server;
 use App\Services\Provisioning\NodeRedDeployer;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Layout;
@@ -30,6 +33,13 @@ class Show extends Component
     public string $password = '';
     public string $permissions = '*';
     public bool $showUserForm = false;
+
+    // Edit name
+    public bool $showEditNameForm = false;
+    public string $newSubdomain = '';
+
+    // Move instance
+    public ?int $targetServerId = null;
 
     public function mount(NodeRedInstance $instance): void
     {
@@ -371,6 +381,94 @@ class Show extends Component
         $this->redirect(route('admin.instances.index'), navigate: true);
     }
 
+    public function showEditNameForm(): void
+    {
+        Gate::authorize('update', $this->instance);
+        $this->newSubdomain = $this->instance->subdomain;
+        $this->showEditNameForm = true;
+    }
+
+    public function cancelEditName(): void
+    {
+        $this->showEditNameForm = false;
+        $this->newSubdomain = '';
+    }
+
+    public function updateName(): void
+    {
+        Gate::authorize('update', $this->instance);
+
+        $this->validate([
+            'newSubdomain' => [
+                'required',
+                'string',
+                'max:255',
+                'regex:/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i',
+            ],
+        ], [
+            'newSubdomain.regex' => 'Subdomain must contain only lowercase letters, numbers, and hyphens.',
+        ]);
+
+        // Check if subdomain is already taken
+        $existing = NodeRedInstance::where('subdomain', $this->newSubdomain)
+            ->where('id', '!=', $this->instance->id)
+            ->first();
+
+        if ($existing) {
+            $this->dispatch('notify', [
+                'type' => 'error',
+                'message' => "Subdomain '{$this->newSubdomain}' is already taken.",
+            ]);
+            return;
+        }
+
+        // Dispatch job to update name
+        UpdateNodeRedInstanceNameJob::dispatch($this->instance->id, $this->newSubdomain, auth()->id());
+
+        $this->dispatch('notify', [
+            'type' => 'success',
+            'message' => 'Instance name update queued. DNS records will be updated shortly.',
+        ]);
+
+        $this->showEditNameForm = false;
+        $this->newSubdomain = '';
+        $this->instance->refresh();
+    }
+
+    public function cancelMove(): void
+    {
+        $this->targetServerId = null;
+    }
+
+    public function moveInstance(): void
+    {
+        Gate::authorize('update', $this->instance);
+
+        $this->validate([
+            'targetServerId' => ['required', 'integer', 'exists:servers,id'],
+        ]);
+
+        if ($this->targetServerId === $this->instance->server_id) {
+            $this->dispatch('notify', [
+                'type' => 'error',
+                'message' => 'Instance is already on the selected server.',
+            ]);
+            return;
+        }
+
+        // Dispatch job to move instance
+        MoveNodeRedInstanceJob::dispatch($this->instance->id, $this->targetServerId, auth()->id());
+
+        $this->dispatch('notify', [
+            'type' => 'success',
+            'message' => 'Instance migration queued. The instance will be moved to the new server shortly.',
+        ]);
+
+        $this->showMoveForm = false;
+        $this->targetServerId = null;
+        $this->instance->refresh();
+    }
+
     public function render()
     {
         $this->instance->load([
@@ -399,6 +497,7 @@ class Show extends Component
         return view('livewire.admin.instances.show', [
             'instance' => $this->instance,
             'isRunning' => $isRunning,
+            'servers' => Gate::allows('super-admin') ? Server::where('status', 'active')->orderBy('name')->get() : collect(),
         ]);
     }
 }

@@ -66,6 +66,19 @@
                         </svg>
                         {{ __('Security') }}
                     </button>
+                    @if(Gate::allows('super-admin') && Gate::allows('update', $instance))
+                        <button 
+                            wire:click="setTab('move')"
+                            class="w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors
+                                @if($activeTab === 'move') bg-blue-50 text-blue-700 dark:bg-blue-900/20 dark:text-blue-400
+                                @else text-neutral-600 hover:bg-neutral-50 dark:text-neutral-400 dark:hover:bg-neutral-900/50
+                                @endif">
+                            <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                            </svg>
+                            {{ __('Move Instance') }}
+                        </button>
+                    @endif
                 </nav>
             </div>
         </div>
@@ -80,6 +93,31 @@
                         <div class="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-6 shadow-sm">
                             <h2 class="mb-4 text-lg font-semibold">{{ __('Instance Information') }}</h2>
                             <dl class="mb-6 space-y-3 text-sm">
+                                <div class="flex justify-between items-center">
+                                    <dt class="text-neutral-500">{{ __('Subdomain') }}</dt>
+                                    <dd class="font-medium">
+                                        @if($showEditNameForm)
+                                            <div class="flex items-center gap-2">
+                                                <flux:input wire:model="newSubdomain" type="text" size="sm" class="flex-1" />
+                                                <flux:button wire:click="updateName" variant="primary" size="sm" icon="check">
+                                                    {{ __('Save') }}
+                                                </flux:button>
+                                                <flux:button wire:click="cancelEditName" variant="ghost" size="sm" icon="x-mark">
+                                                    {{ __('Cancel') }}
+                                                </flux:button>
+                                            </div>
+                                        @else
+                                            <div class="flex items-center gap-2">
+                                                <span>{{ $instance->subdomain }}</span>
+                                                @if(Gate::allows('update', $instance))
+                                                    <flux:button wire:click="showEditNameForm" variant="ghost" size="xs" icon="pencil">
+                                                        {{ __('Edit') }}
+                                                    </flux:button>
+                                                @endif
+                                            </div>
+                                        @endif
+                                    </dd>
+                                </div>
                                 <div class="flex justify-between items-center">
                                     <dt class="text-neutral-500">{{ __('User') }}</dt>
                                     <dd class="font-medium">{{ $instance->user->name }}</dd>
@@ -155,7 +193,7 @@
                                     <dd class="font-medium">{{ $instance->admin_user }}</dd>
                                 </div>
                                 @if($instance->fqdn)
-                                    <div>
+<div>
                                         <dt class="mb-1 text-neutral-500">{{ __('Subdomain') }}</dt>
                                         <dd class="font-mono text-sm">{{ $instance->subdomain }}</dd>
                                     </div>
@@ -420,6 +458,171 @@
                             </tbody>
                         </table>
                     </div>
+                </div>
+
+            @elseif($activeTab === 'move')
+                <!-- Move Instance Tab -->
+                <div class="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-6 shadow-sm">
+                    <div class="mb-6">
+                        <h2 class="text-lg font-semibold">{{ __('Move Instance to Another Server') }}</h2>
+                        <p class="mt-2 text-sm text-neutral-500">
+                            {{ __('This will migrate the instance to a different server. The instance will be stopped on the current server, deployed on the target server, and DNS records will be updated.') }}
+                        </p>
+                    </div>
+
+                    @if($instance->server)
+                        <div class="flex items-center gap-6">
+                            <!-- Current Server (Readonly) -->
+                            <div class="flex-1 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900/50 p-4">
+                                <h3 class="mb-3 text-sm font-semibold text-neutral-500">{{ __('Current Server') }}</h3>
+                                <div class="space-y-2">
+                                    <div>
+                                        <div class="text-xs text-neutral-500 mb-1">{{ __('Server Name') }}</div>
+                                        <div class="font-semibold">{{ $instance->server->name }}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-neutral-500 mb-1">{{ __('IP Address') }}</div>
+                                        <div class="font-mono text-sm">{{ $instance->server->public_ip }}</div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-neutral-500 mb-1">{{ __('Region') }}</div>
+                                        <div class="text-sm">{{ $instance->server->region }}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Arrow -->
+                            <div class="flex items-center justify-center">
+                                <svg class="h-8 w-8 text-neutral-400 dark:text-neutral-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                </svg>
+                            </div>
+
+                            <!-- Target Server Dropdown -->
+                            <div class="flex-1">
+                                <h3 class="mb-3 text-sm font-semibold text-neutral-500">{{ __('Target Server') }}</h3>
+                                @if($servers->isEmpty())
+                                    <div class="rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-900/20 p-4">
+                                        <p class="text-sm text-yellow-800 dark:text-yellow-200">
+                                            {{ __('No active servers available. Please create a server first.') }}
+                                        </p>
+                                    </div>
+                                @else
+                                    <flux:select wire:model.live="targetServerId" :label="__('Select Target Server')" class="w-full">
+                                        <option value="">{{ __('Choose a server...') }}</option>
+                                        @foreach($servers as $server)
+                                            @if($server->id !== $instance->server_id)
+                                                @php
+                                                    $availableMemory = $server->available_memory_mb;
+                                                    $availableDisk = $server->available_disk_gb;
+                                                    $hasEnoughMemory = $availableMemory >= $instance->memory_mb;
+                                                    $hasEnoughDisk = $availableDisk >= $instance->storage_gb;
+                                                    $canMove = $hasEnoughMemory && $hasEnoughDisk;
+                                                @endphp
+                                                <option value="{{ $server->id }}" @if(!$canMove) disabled @endif>
+                                                    {{ $server->name }} 
+                                                    @if(!$canMove)
+                                                        ({{ __('Insufficient Resources') }})
+                                                    @else
+                                                        - {{ $server->region }} ({{ number_format($availableMemory) }} MB / {{ number_format($availableDisk) }} GB available)
+                                                    @endif
+                                                </option>
+                                            @endif
+                                        @endforeach
+                                    </flux:select>
+
+                                    @if($targetServerId)
+                                        @php
+                                            $selectedServer = $servers->firstWhere('id', $targetServerId);
+                                            if ($selectedServer) {
+                                                $availableMemory = $selectedServer->available_memory_mb;
+                                                $availableDisk = $selectedServer->available_disk_gb;
+                                                $hasEnoughMemory = $availableMemory >= $instance->memory_mb;
+                                                $hasEnoughDisk = $availableDisk >= $instance->storage_gb;
+                                            }
+                                        @endphp
+                                        @if($selectedServer)
+                                            <div class="mt-4 rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-900/50 p-4">
+                                                <div class="space-y-2 text-sm">
+                                                    <div class="flex justify-between">
+                                                        <span class="text-neutral-500">{{ __('Server Name') }}</span>
+                                                        <span class="font-semibold">{{ $selectedServer->name }}</span>
+                                                    </div>
+                                                    <div class="flex justify-between">
+                                                        <span class="text-neutral-500">{{ __('IP Address') }}</span>
+                                                        <span class="font-mono text-xs">{{ $selectedServer->public_ip }}</span>
+                                                    </div>
+                                                    <div class="flex justify-between">
+                                                        <span class="text-neutral-500">{{ __('Region') }}</span>
+                                                        <span>{{ $selectedServer->region }}</span>
+                                                    </div>
+                                                    <div class="flex justify-between">
+                                                        <span class="text-neutral-500">{{ __('Available Memory') }}</span>
+                                                        <span class="@if(!$hasEnoughMemory) text-red-600 dark:text-red-400 @endif">
+                                                            {{ number_format($availableMemory) }} MB
+                                                            @if(!$hasEnoughMemory)
+                                                                <span class="text-xs">(Need {{ number_format($instance->memory_mb) }} MB)</span>
+                                                            @endif
+                                                        </span>
+                                                    </div>
+                                                    <div class="flex justify-between">
+                                                        <span class="text-neutral-500">{{ __('Available Storage') }}</span>
+                                                        <span class="@if(!$hasEnoughDisk) text-red-600 dark:text-red-400 @endif">
+                                                            {{ number_format($availableDisk) }} GB
+                                                            @if(!$hasEnoughDisk)
+                                                                <span class="text-xs">(Need {{ number_format($instance->storage_gb) }} GB)</span>
+                                                            @endif
+                                                        </span>
+                                                    </div>
+                                                    @if(!$hasEnoughMemory || !$hasEnoughDisk)
+                                                        <div class="mt-3 rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-3">
+                                                            <p class="text-xs text-red-800 dark:text-red-200">
+                                                                {{ __('Warning: Selected server does not have sufficient resources for this instance.') }}
+                                                            </p>
+                                                        </div>
+                                                    @endif
+                                                </div>
+                                            </div>
+                                        @endif
+                                    @endif
+
+                                    <div class="mt-6 flex items-center gap-3">
+                                        <flux:button 
+                                            wire:click="moveInstance" 
+                                            variant="primary" 
+                                            size="sm"
+                                            :disabled="!$targetServerId"
+                                            icon="arrow-right">
+                                            {{ __('Move Instance') }}
+                                        </flux:button>
+                                        @if($targetServerId)
+                                            <flux:button wire:click="cancelMove" variant="ghost" size="sm">
+                                                {{ __('Cancel') }}
+                                            </flux:button>
+                                        @endif
+                                    </div>
+                                @endif
+                            </div>
+                        </div>
+
+                        <div class="mt-6 rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-900/20 p-4">
+                            <h3 class="mb-2 text-sm font-semibold text-yellow-800 dark:text-yellow-200">
+                                {{ __('Important Notes') }}
+                            </h3>
+                            <ul class="list-disc list-inside space-y-1 text-xs text-yellow-800 dark:text-yellow-200">
+                                <li>{{ __('The instance will be temporarily unavailable during migration.') }}</li>
+                                <li>{{ __('Instance data will be preserved, but the container will be recreated on the new server.') }}</li>
+                                <li>{{ __('DNS records will be automatically updated to point to the new server.') }}</li>
+                                <li>{{ __('The migration process may take several minutes to complete.') }}</li>
+                            </ul>
+                        </div>
+                    @else
+                        <div class="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-4">
+                            <p class="text-sm text-red-800 dark:text-red-200">
+                                {{ __('This instance has no server assigned. Cannot perform migration.') }}
+                            </p>
+                        </div>
+                    @endif
                 </div>
             @endif
         </div>
