@@ -145,7 +145,53 @@ class DeployNodeRedInstanceJob implements ShouldQueue
 
             // Ensure server is active
             if ($instance->server->status !== 'active') {
-                throw new \RuntimeException('Server is not active. Status: ' . $instance->server->status);
+                // Try to sync status from Hetzner first - might be a status mismatch
+                Log::info('Server status is not active, attempting to sync from Hetzner', [
+                    'instance_id' => $instance->id,
+                    'server_id' => $instance->server->id,
+                    'current_status' => $instance->server->status,
+                ]);
+                
+                $synced = $instance->server->syncStatusFromHetzner();
+                $instance->server->refresh();
+                
+                if ($synced && $instance->server->status === 'active') {
+                    Log::info('Server status synced successfully, status is now active', [
+                        'instance_id' => $instance->id,
+                        'server_id' => $instance->server->id,
+                    ]);
+                } else {
+                    // If sync failed or still not active, try SSH connectivity as last resort
+                    // Server might be running but Hetzner API might have issues
+                    if ($instance->server->public_ip) {
+                        try {
+                            $ssh = new \App\Services\SSH\Ssh($instance->server->public_ip);
+                            $sshConnected = $ssh->testConnection();
+                            
+                            if ($sshConnected) {
+                                Log::warning('Server status is not active but SSH connection works, updating status to active', [
+                                    'instance_id' => $instance->id,
+                                    'server_id' => $instance->server->id,
+                                    'current_status' => $instance->server->status,
+                                ]);
+                                // Server is actually running, update status manually
+                                $instance->server->update(['status' => 'active']);
+                                $instance->server->refresh();
+                            } else {
+                                throw new \RuntimeException('Server is not active. Status: ' . $instance->server->status . '. SSH connection also failed. Please check the server status in Hetzner Cloud.');
+                            }
+                        } catch (\Exception $e) {
+                            Log::error('Failed to test SSH connectivity', [
+                                'instance_id' => $instance->id,
+                                'server_id' => $instance->server->id,
+                                'error' => $e->getMessage(),
+                            ]);
+                            throw new \RuntimeException('Server is not active. Status: ' . $instance->server->status . '. Please check the server status in Hetzner Cloud.');
+                        }
+                    } else {
+                        throw new \RuntimeException('Server is not active. Status: ' . $instance->server->status . '. Server has no public IP. Please check the server status in Hetzner Cloud.');
+                    }
+                }
             }
 
             // Generate credential secret if not set
