@@ -48,7 +48,7 @@ class CapacityPlanner
         // For testing: use hardcoded server ID
         $hardcodedServerId = config('provisioning.testing.hardcoded_server_id', null);
         
-        if ($hardcodedServerId) {
+        if ($hardcodedServerId && app()->isLocal()) {
             $server = Server::find($hardcodedServerId);
             
             if ($server) {
