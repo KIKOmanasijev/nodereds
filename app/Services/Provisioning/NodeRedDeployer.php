@@ -577,8 +577,30 @@ class NodeRedDeployer
                 }
 
                 // Check container health status first (if health check is configured)
+                // Try docker inspect first
                 $healthResult = $this->ssh->execute("docker inspect --format='{{.State.Health.Status}}' {$containerName} 2>&1", false);
                 $healthStatus = trim($healthResult->getOutput());
+                
+                // If inspect fails or returns an error, try checking docker ps output
+                if (!$healthResult->isSuccess() || str_contains($healthStatus, 'Error') || empty($healthStatus)) {
+                    // Check docker ps output for health status
+                    $psResult = $this->ssh->execute("docker ps --filter name={$containerName} --format '{{.Status}}'", false);
+                    $psStatus = $psResult->getOutput();
+                    
+                    // Extract health status from docker ps output (e.g., "Up 14 seconds (health: starting)")
+                    if (preg_match('/\(health: ([^)]+)\)/', $psStatus, $matches)) {
+                        $healthStatus = $matches[1];
+                        Log::debug('Extracted health status from docker ps', [
+                            'instance_id' => $instance->id,
+                            'container_name' => $containerName,
+                            'health_status' => $healthStatus,
+                            'ps_status' => $psStatus,
+                        ]);
+                    } else {
+                        // No health check found in docker ps either
+                        $healthStatus = '';
+                    }
+                }
                 
                 // If health check is configured and shows "healthy", we're ready
                 if ($healthStatus === 'healthy') {
@@ -607,6 +629,11 @@ class NodeRedDeployer
                         }
                     }
                     // Still starting or unhealthy, wait and continue
+                    Log::debug('Container health check still in progress', [
+                        'instance_id' => $instance->id,
+                        'container_name' => $containerName,
+                        'health_status' => $healthStatus,
+                    ]);
                     sleep(3);
                     continue;
                 }
@@ -660,6 +687,15 @@ class NodeRedDeployer
         $healthResult = $this->ssh->execute("docker inspect --format='{{.State.Health.Status}}' {$containerName} 2>&1", false);
         $healthStatus = trim($healthResult->getOutput());
         
+        // If inspect fails, try docker ps
+        if (!$healthResult->isSuccess() || str_contains($healthStatus, 'Error') || empty($healthStatus)) {
+            $psResult = $this->ssh->execute("docker ps --filter name={$containerName} --format '{{.Status}}'", false);
+            $psStatus = $psResult->getOutput();
+            if (preg_match('/\(health: ([^)]+)\)/', $psStatus, $matches)) {
+                $healthStatus = $matches[1];
+            }
+        }
+        
         if ($healthStatus === 'healthy') {
             Log::info('Node-RED instance became healthy after timeout check', [
                 'instance_id' => $instance->id,
@@ -676,6 +712,11 @@ class NodeRedDeployer
                 'fqdn' => $instance->fqdn,
             ]);
             return true;
+        }
+
+        // If health check is still "starting", throw an error
+        if ($healthStatus === 'starting') {
+            throw new \RuntimeException('Node-RED health check is still in "starting" state after timeout. Container may not be fully ready.');
         }
 
         // If we have error logs, include them in the exception
