@@ -2,7 +2,6 @@
 
 namespace App\Livewire\Admin\Instances;
 
-use App\Jobs\DeleteNodeRedInstanceJob;
 use App\Models\NodeRedInstance;
 use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Layout;
@@ -17,20 +16,6 @@ class Index extends Component
     public function mount(): void
     {
         Gate::authorize('viewAny', NodeRedInstance::class);
-    }
-
-    public function delete(int $instanceId): void
-    {
-        $instance = NodeRedInstance::findOrFail($instanceId);
-        Gate::authorize('delete', $instance);
-
-        // Dispatch delete job
-        DeleteNodeRedInstanceJob::dispatch($instanceId, auth()->id());
-
-        $this->dispatch('notify', [
-            'type' => 'success',
-            'message' => 'Instance deletion initiated.',
-        ]);
     }
 
     public function render()

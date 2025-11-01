@@ -66,6 +66,11 @@ class NodeRedInstance extends Model
         return $this->hasMany(Domain::class);
     }
 
+    public function nodeRedUsers(): HasMany
+    {
+        return $this->hasMany(NodeRedUser::class);
+    }
+
     public function latestDeployment(): HasOne
     {
         return $this->hasOne(Deployment::class)->latestOfMany();

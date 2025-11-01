@@ -6,6 +6,7 @@ use App\Models\NodeRedInstance;
 use App\Models\Server;
 use App\Services\SSH\Ssh;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\View;
 use Illuminate\Support\Str;
 
 class NodeRedDeployer
@@ -41,14 +42,23 @@ class NodeRedDeployer
             $this->ssh->execute("chown -R 1000:1000 {$dataPath}", false);
             $this->ssh->execute("chmod -R 755 {$dataPath}", false);
 
+            // Deploy settings.js file with authentication
+            $this->deploySettingsFile($instance, $instancePath);
+
             // Generate compose file
             $this->deployComposeFile($instance, $instancePath);
 
             // Start the container
             $this->startContainer($instancePath);
 
-            // Wait for Node-RED to be ready
-            $this->waitForReady($instance);
+            // Wait for Node-RED to be ready and verify it started successfully
+            $ready = $this->waitForReady($instance);
+            
+            if (!$ready) {
+                // Get logs for debugging
+                $logs = $this->getLogs($instance, 100);
+                throw new \RuntimeException('Node-RED failed to start within timeout. Container logs: ' . substr($logs, -1000));
+            }
 
             return true;
         } catch (\Exception $e) {
@@ -56,6 +66,175 @@ class NodeRedDeployer
                 'instance_id' => $instance->id,
                 'server_id' => $this->server->id,
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            // Re-throw so the job can handle it properly
+            throw $e;
+        }
+    }
+
+    /**
+     * Deploy settings.js file with authentication configuration.
+     */
+    private function deploySettingsFile(NodeRedInstance $instance, string $instancePath): void
+    {
+        $this->syncUsers($instance, $instancePath);
+    }
+
+    /**
+     * Sync all users (admin + additional) to settings.js file.
+     * This method can be called after user changes to update the settings.js file.
+     */
+    public function syncUsers(NodeRedInstance $instance, ?string $instancePath = null): bool
+    {
+        try {
+            if ($instancePath === null) {
+                $instancePath = "{$this->noderedPath}/{$instance->slug}";
+            }
+
+            // Get fresh instance from database to ensure we have all attributes including hidden ones
+            $instance = NodeRedInstance::findOrFail($instance->id);
+
+            // Build users array: admin user + all additional users
+            $users = [];
+
+            // Add admin user (from instance)
+            Log::debug('Checking admin user for instance', [
+                'instance_id' => $instance->id,
+                'admin_user' => $instance->admin_user,
+                'has_admin_pass_hash' => !empty($instance->admin_pass_hash),
+            ]);
+            
+            if ($instance->admin_user && $instance->admin_pass_hash) {
+                $passwordHash = $instance->admin_pass_hash;
+                // Convert Laravel's $2y$ format to Node-RED's $2a$ format for compatibility
+                if (str_starts_with($passwordHash, '$2y$')) {
+                    $passwordHash = str_replace('$2y$', '$2a$', $passwordHash);
+                }
+
+                $users[] = [
+                    'username' => $instance->admin_user,
+                    'password' => $passwordHash,
+                    'permissions' => '*',
+                ];
+                
+                Log::debug('Added admin user to users array', [
+                    'username' => $instance->admin_user,
+                    'users_count' => count($users),
+                ]);
+            } else {
+                Log::warning('Admin user not found for instance', [
+                    'instance_id' => $instance->id,
+                    'admin_user' => $instance->admin_user,
+                    'admin_pass_hash' => $instance->admin_pass_hash ? 'present' : 'missing',
+                ]);
+            }
+
+            // Add additional users from node_red_users table
+            $instance->load('nodeRedUsers');
+            foreach ($instance->nodeRedUsers as $user) {
+                $passwordHash = $user->password_hash;
+                // Convert Laravel's $2y$ format to Node-RED's $2a$ format for compatibility
+                if (str_starts_with($passwordHash, '$2y$')) {
+                    $passwordHash = str_replace('$2y$', '$2a$', $passwordHash);
+                }
+
+                $users[] = [
+                    'username' => $user->username,
+                    'password' => $passwordHash,
+                    'permissions' => $user->permissions,
+                ];
+            }
+
+            // Ensure we have at least one user (admin user should always be present)
+            if (empty($users)) {
+                Log::error('No users found for instance - cannot create passwordless instance', [
+                    'instance_id' => $instance->id,
+                    'admin_user' => $instance->admin_user,
+                    'admin_pass_hash' => $instance->admin_pass_hash ? 'present' : 'missing',
+                ]);
+                throw new \RuntimeException('Cannot create settings.js without at least one user. Admin user credentials are missing.');
+            }
+
+            Log::debug('Final users array for settings.js', [
+                'instance_id' => $instance->id,
+                'users_count' => count($users),
+                'usernames' => array_column($users, 'username'),
+            ]);
+
+            // Render Blade template
+            $credentialSecret = $instance->credential_secret ?? Str::random(32);
+            
+            try {
+                $settingsContent = View::make('stubs.docker.nodered.settings', [
+                    'users' => $users,
+                    'credentialSecret' => $credentialSecret,
+                ])->render();
+            } catch (\Exception $e) {
+                Log::error('Failed to render Blade template', [
+                    'instance_id' => $instance->id,
+                    'error' => $e->getMessage(),
+                    'view' => 'stubs.docker.nodered.settings',
+                ]);
+                throw new \RuntimeException('Failed to render settings.js template: ' . $e->getMessage());
+            }
+            
+            Log::debug('Rendered settings.js content', [
+                'instance_id' => $instance->id,
+                'content_length' => strlen($settingsContent),
+                'content_preview' => substr($settingsContent, 0, 200),
+            ]);
+            
+            // Log full content for debugging (be careful with sensitive data in production)
+            Log::debug('Full settings.js content', [
+                'instance_id' => $instance->id,
+                'full_content' => $settingsContent,
+            ]);
+
+            // Remove old settings.js file if it exists (to ensure clean upload)
+            $settingsPath = "{$instancePath}/data/settings.js";
+            $this->ssh->execute("rm -f " . escapeshellarg($settingsPath), false);
+
+            // Upload settings.js to the data directory
+            $success = $this->ssh->uploadContent($settingsContent, $settingsPath);
+            
+            if (!$success) {
+                throw new \RuntimeException('Failed to upload settings.js file to server.');
+            }
+            
+            // Verify file was uploaded correctly
+            $verifyResult = $this->ssh->execute("test -f " . escapeshellarg($settingsPath) . " && wc -l " . escapeshellarg($settingsPath), false);
+            if (!$verifyResult->isSuccess()) {
+                throw new \RuntimeException('Settings.js file was not created on server.');
+            }
+            
+            Log::info('Settings.js file uploaded successfully', [
+                'instance_id' => $instance->id,
+                'file_size' => strlen($settingsContent),
+                'file_lines' => trim($verifyResult->getOutput()),
+            ]);
+            
+            // Verify file contents on server match what we uploaded
+            $verifyContentResult = $this->ssh->execute("cat " . escapeshellarg($settingsPath), false);
+            if ($verifyContentResult->isSuccess()) {
+                $serverContent = $verifyContentResult->getOutput();
+                Log::debug('Settings.js file contents on server', [
+                    'instance_id' => $instance->id,
+                    'server_content_length' => strlen($serverContent),
+                    'server_content' => $serverContent,
+                ]);
+            }
+            
+            // Ensure correct permissions
+            $this->ssh->execute("chown 1000:1000 {$instancePath}/data/settings.js", false);
+            $this->ssh->execute("chmod 644 {$instancePath}/data/settings.js", false);
+
+            return true;
+        } catch (\Exception $e) {
+            Log::error('Failed to sync users', [
+                'instance_id' => $instance->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             return false;
         }
@@ -118,6 +297,24 @@ class NodeRedDeployer
     }
 
     /**
+     * Start the Node-RED container.
+     */
+    public function start(NodeRedInstance $instance): bool
+    {
+        try {
+            $instancePath = "{$this->noderedPath}/{$instance->slug}";
+            $result = $this->ssh->execute("cd {$instancePath} && docker compose up -d");
+            return $result->isSuccess();
+        } catch (\Exception $e) {
+            Log::error('Failed to start Node-RED instance', [
+                'instance_id' => $instance->id,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
+
+    /**
      * Restart the Node-RED container.
      */
     public function restart(NodeRedInstance $instance): bool
@@ -170,31 +367,61 @@ class NodeRedDeployer
 
     /**
      * Wait for Node-RED to be ready.
+     * Checks both HTTP response and container logs to ensure Node-RED started successfully.
      */
-    private function waitForReady(NodeRedInstance $instance, int $timeout = 60): bool
+    private function waitForReady(NodeRedInstance $instance, int $timeout = 120): bool
     {
         $start = time();
         $url = "https://{$instance->fqdn}";
+        $containerName = "nodered_{$instance->slug}";
+        $lastErrorLog = '';
 
         while (time() - $start < $timeout) {
             try {
-                $ch = curl_init($url);
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                curl_setopt($ch, CURLOPT_NOBODY, true);
-                curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                curl_close($ch);
+                // Check container logs for errors
+                $logsResult = $this->ssh->execute("docker logs {$containerName} --tail 50 2>&1", false);
+                $logs = $logsResult->getOutput();
+                
+                // Check for critical errors in logs
+                if (str_contains($logs, 'Error loading settings file') || 
+                    str_contains($logs, 'SyntaxError') ||
+                    str_contains($logs, 'ReferenceError') ||
+                    str_contains($logs, 'TypeError')) {
+                    $lastErrorLog = $logs;
+                    throw new \RuntimeException('Node-RED failed to start due to configuration error. Check logs for details.');
+                }
+                
+                // Check if Node-RED is actually running (not just the container)
+                if (str_contains($logs, 'Started flows') || str_contains($logs, 'Server now running')) {
+                    // Verify HTTP response
+                    $ch = curl_init($url);
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
+                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                    curl_setopt($ch, CURLOPT_NOBODY, true);
+                    curl_exec($ch);
+                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                    curl_close($ch);
 
-                if ($httpCode >= 200 && $httpCode < 400) {
-                    return true;
+                    if ($httpCode >= 200 && $httpCode < 500) {
+                        return true;
+                    }
                 }
             } catch (\Exception $e) {
-                // Continue waiting
+                // If we got an error from logs check, throw it immediately
+                if ($lastErrorLog) {
+                    throw $e;
+                }
+                // Otherwise continue waiting
             }
 
             sleep(3);
+        }
+
+        // If we have error logs, include them in the exception
+        if ($lastErrorLog) {
+            throw new \RuntimeException('Node-RED failed to start within timeout. Last error: ' . substr($lastErrorLog, -500));
         }
 
         return false;
