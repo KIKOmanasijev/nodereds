@@ -4,6 +4,7 @@ namespace App\Services\Provisioning;
 
 use App\Models\NodeRedInstance;
 use App\Models\Server;
+use App\Services\Provisioning\TraefikBootstrapper;
 use App\Services\SSH\Ssh;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\View;
@@ -838,7 +839,7 @@ class NodeRedDeployer
             $traefikRunning = $traefikCheck->isSuccess() && !empty(trim($traefikCheck->getOutput()));
 
             if (!$traefikRunning) {
-                Log::warning('Traefik is not running, attempting to start it', [
+                Log::warning('Traefik is not running, attempting to start or bootstrap it', [
                     'instance_id' => $instance->id,
                     'traefik_path' => $traefikPath,
                 ]);
@@ -846,39 +847,72 @@ class NodeRedDeployer
                 // Check if Traefik compose file exists
                 $composeExists = $this->ssh->execute("test -f {$traefikPath}/docker-compose.yml", false);
                 if (!$composeExists->isSuccess()) {
-                    Log::error('Traefik docker-compose.yml not found', [
+                    Log::warning('Traefik docker-compose.yml not found, attempting to bootstrap Traefik', [
+                        'instance_id' => $instance->id,
+                        'traefik_path' => $traefikPath,
+                        'server_id' => $this->server->id,
+                    ]);
+                    
+                    // Bootstrap Traefik if it doesn't exist
+                    try {
+                        $bootstrapper = new TraefikBootstrapper($this->server);
+                        $bootstrapSuccess = $bootstrapper->bootstrap();
+                        
+                        if (!$bootstrapSuccess) {
+                            throw new \RuntimeException('Traefik bootstrap failed. Check logs for details.');
+                        }
+                        
+                        Log::info('Traefik bootstrapped successfully', [
+                            'instance_id' => $instance->id,
+                            'server_id' => $this->server->id,
+                        ]);
+                        
+                        // Wait for Traefik to start
+                        sleep(5);
+                    } catch (\Exception $e) {
+                        Log::error('Failed to bootstrap Traefik', [
+                            'instance_id' => $instance->id,
+                            'server_id' => $this->server->id,
+                            'error' => $e->getMessage(),
+                            'trace' => $e->getTraceAsString(),
+                        ]);
+                        throw new \RuntimeException(
+                            "Traefik is not running and bootstrap failed. " .
+                            "Error: {$e->getMessage()}. " .
+                            "Please check server logs or try bootstrapping Traefik manually: " .
+                            "cd {$traefikPath} && docker compose up -d"
+                        );
+                    }
+                } else {
+                    // Compose file exists, try to start Traefik
+                    Log::info('Traefik compose file exists, attempting to start Traefik', [
                         'instance_id' => $instance->id,
                         'traefik_path' => $traefikPath,
                     ]);
-                    throw new \RuntimeException(
-                        "Traefik is not running and docker-compose.yml not found at {$traefikPath}. " .
-                        "Please bootstrap Traefik first via the server provisioning job."
-                    );
-                }
+                    
+                    $startResult = $this->ssh->execute("cd {$traefikPath} && docker compose up -d traefik", false);
+                    if (!$startResult->isSuccess()) {
+                        Log::error('Failed to start Traefik', [
+                            'instance_id' => $instance->id,
+                            'traefik_path' => $traefikPath,
+                            'error' => $startResult->getErrorOutput(),
+                            'output' => $startResult->getOutput(),
+                        ]);
+                        throw new \RuntimeException(
+                            "Traefik is not running and failed to start it. " .
+                            "Error: {$startResult->getErrorOutput()}. " .
+                            "Please check Traefik logs: cd {$traefikPath} && docker compose logs traefik"
+                        );
+                    }
 
-                // Try to start Traefik
-                $startResult = $this->ssh->execute("cd {$traefikPath} && docker compose up -d traefik", false);
-                if (!$startResult->isSuccess()) {
-                    Log::error('Failed to start Traefik', [
+                    Log::info('Traefik started successfully', [
                         'instance_id' => $instance->id,
                         'traefik_path' => $traefikPath,
-                        'error' => $startResult->getErrorOutput(),
-                        'output' => $startResult->getOutput(),
                     ]);
-                    throw new \RuntimeException(
-                        "Traefik is not running and failed to start it. " .
-                        "Error: {$startResult->getErrorOutput()}. " .
-                        "Please check Traefik logs: cd {$traefikPath} && docker compose logs traefik"
-                    );
+
+                    // Wait for Traefik to start
+                    sleep(5);
                 }
-
-                Log::info('Traefik started successfully', [
-                    'instance_id' => $instance->id,
-                    'traefik_path' => $traefikPath,
-                ]);
-
-                // Wait for Traefik to start
-                sleep(5);
             } else {
                 // Restart Traefik to force it to rediscover containers
                 Log::info('Restarting Traefik to rediscover containers', [
