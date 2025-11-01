@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  nodered:
+    image: nodered/node-red:latest
+    container_name: nodered_{{SLUG}}
+    restart: unless-stopped
+    mem_limit: {{MEMORY_LIMIT}}
+    cpus: '{{CPU_LIMIT}}'
+    environment:
+      - TZ=UTC
+      - NODE_RED_CREDENTIAL_SECRET={{CREDENTIAL_SECRET}}
+      - NODE_OPTIONS=--max-old-space-size={{NODE_MEMORY}}
+    volumes:
+      - ./data:/data
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nodered-{{SLUG}}.rule=Host(`{{FQDN}}`)"
+      - "traefik.http.routers.nodered-{{SLUG}}.entrypoints=websecure"
+      - "traefik.http.routers.nodered-{{SLUG}}.tls=true"
+      - "traefik.http.routers.nodered-{{SLUG}}.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nodered-{{SLUG}}.service=nodered-{{SLUG}}"
+      - "traefik.http.services.nodered-{{SLUG}}.loadbalancer.server.port=1880"
+      - "traefik.http.routers.nodered-{{SLUG}}-http.rule=Host(`{{FQDN}}`)"
+      - "traefik.http.routers.nodered-{{SLUG}}-http.entrypoints=web"
+      - "traefik.http.routers.nodered-{{SLUG}}-http.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.permanent=true"
+    networks:
+      - edge
+
+networks:
+  edge:
+    external: true
+
