@@ -256,7 +256,7 @@
                                                     </span>
                                                 </td>
                                                 <td class="px-4 py-3 text-sm text-neutral-600 dark:text-neutral-400">
-                                                    {{ __('Deploy') }}
+                                                    {{ ucfirst($deployment->metadata['action'] ?? 'deploy') }}
                                                 </td>
                                                 <td class="px-4 py-3 text-sm">
                                                     <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium
