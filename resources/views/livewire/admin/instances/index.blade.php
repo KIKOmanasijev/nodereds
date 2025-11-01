@@ -51,12 +51,14 @@
                         </div>
 
                         <!-- Server -->
-                        @if($instance->server)
-                            <div class="mb-4">
-                                <dt class="mb-1 text-xs font-medium text-neutral-500">{{ __('Server') }}</dt>
-                                <dd class="text-sm text-neutral-900 dark:text-neutral-100">{{ $instance->server->name }}</dd>
-                            </div>
-                        @endif
+                        @can('super-admin')
+                            @if($instance->server)
+                                <div class="mb-4">
+                                    <dt class="mb-1 text-xs font-medium text-neutral-500">{{ __('Server') }}</dt>
+                                    <dd class="text-sm text-neutral-900 dark:text-neutral-100">{{ $instance->server->name }}</dd>
+                                </div>
+                            @endif
+                        @endcan
 
                         <!-- Instance URL -->
                         @if($instance->fqdn)

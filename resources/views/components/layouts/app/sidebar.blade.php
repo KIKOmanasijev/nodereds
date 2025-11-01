@@ -14,7 +14,9 @@
             <flux:navlist variant="outline">
                 <flux:navlist.group :heading="__('Platform')" class="grid">
                     <flux:navlist.item icon="home" :href="route('dashboard')" :current="request()->routeIs('dashboard')" wire:navigate>{{ __('Dashboard') }}</flux:navlist.item>
-                    <flux:navlist.item icon="server" :href="route('admin.servers.index')" :current="request()->routeIs('admin.servers.*')" wire:navigate>{{ __('Servers') }}</flux:navlist.item>
+                    @can('super-admin')
+                        <flux:navlist.item icon="server" :href="route('admin.servers.index')" :current="request()->routeIs('admin.servers.*')" wire:navigate>{{ __('Servers') }}</flux:navlist.item>
+                    @endcan
                     <flux:navlist.item icon="cube" :href="route('admin.instances.index')" :current="request()->routeIs('admin.instances.*')" wire:navigate>{{ __('Instances') }}</flux:navlist.item>
                 </flux:navlist.group>
             </flux:navlist>

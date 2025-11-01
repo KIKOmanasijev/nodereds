@@ -100,7 +100,7 @@
                                     <dt class="text-neutral-500">{{ __('Slug') }}</dt>
                                     <dd class="font-mono text-xs">{{ $instance->slug }}</dd>
                                 </div>
-                                @if($instance->server)
+                                @if($instance->server && Gate::allows('super-admin'))
                                     <div class="flex justify-between items-center">
                                         <dt class="text-neutral-500">{{ __('Server') }}</dt>
                                         <dd>
