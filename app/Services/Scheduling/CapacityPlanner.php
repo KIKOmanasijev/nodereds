@@ -65,7 +65,7 @@ class CapacityPlanner
         // For testing: if enabled, always try to reuse existing servers first
         $reuseExisting = config('provisioning.testing.reuse_existing_servers', false);
 
-        if ($reuseExisting) {
+        if ($reuseExisting && app()->isLocal()) {
             // Find any active server, regardless of capacity
             $server = Server::where('status', 'active')->first();
             
