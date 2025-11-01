@@ -167,19 +167,45 @@ class TraefikBootstrapper
      */
     private function installDockerCompose(): void
     {
-        // Docker Compose v2 comes with Docker, so if we're here, something is wrong
-        // But we can install standalone version as fallback
+        // Docker Compose v2 (docker compose) comes with docker-compose-plugin package
+        // If docker compose is not available, try reinstalling the plugin
+        Log::warning('Docker Compose not found after Docker installation, attempting to reinstall plugin', [
+            'server_host' => $this->ssh->getHost(),
+        ]);
+
         $commands = [
-            'curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose',
-            'chmod +x /usr/local/bin/docker-compose',
+            'apt-get install -y -qq docker-compose-plugin --reinstall',
         ];
 
         foreach ($commands as $command) {
             $result = $this->ssh->execute($command);
             if (!$result->isSuccess()) {
-                throw new \RuntimeException("Failed to install Docker Compose: {$command}");
+                Log::error('Failed to reinstall Docker Compose plugin', [
+                    'server_host' => $this->ssh->getHost(),
+                    'command' => $command,
+                    'error' => $result->getErrorOutput(),
+                ]);
+                throw new \RuntimeException("Failed to install Docker Compose plugin: {$command}. Error: {$result->getErrorOutput()}");
             }
         }
+
+        // Wait a moment for plugin to be available
+        sleep(2);
+
+        // Verify docker compose is now available
+        $verifyResult = $this->ssh->execute('docker compose version', false);
+        if (!$verifyResult->isSuccess()) {
+            Log::error('Docker Compose plugin installation verification failed', [
+                'server_host' => $this->ssh->getHost(),
+                'error' => $verifyResult->getErrorOutput(),
+            ]);
+            throw new \RuntimeException('Docker Compose plugin was installed but verification failed: ' . $verifyResult->getErrorOutput());
+        }
+
+        Log::info('Docker Compose plugin installed successfully', [
+            'server_host' => $this->ssh->getHost(),
+            'docker_compose_version' => trim($verifyResult->getOutput()),
+        ]);
     }
 
     /**

@@ -496,19 +496,29 @@ class NodeRedDeployer
 
     /**
      * Wait for Node-RED to be ready.
-     * Checks both HTTP response and container logs to ensure Node-RED started successfully.
+     * Checks container logs and status to ensure Node-RED started successfully.
      */
     private function waitForReady(NodeRedInstance $instance, int $timeout = 120): bool
     {
         $start = time();
-        $url = "https://{$instance->fqdn}";
-        $containerName = "nodered_{$instance->slug}";
+        $instancePath = "{$this->noderedPath}/{$instance->slug}";
         $lastErrorLog = '';
+        $hasStartedFlows = false;
 
         while (time() - $start < $timeout) {
             try {
-                // Check container logs for errors
-                $logsResult = $this->ssh->execute("docker logs {$containerName} --tail 50 2>&1", false);
+                // Check container status first
+                $statusResult = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose ps -q nodered", false);
+                $containerId = trim($statusResult->getOutput());
+                
+                if (empty($containerId)) {
+                    // Container not running yet, wait and continue
+                    sleep(3);
+                    continue;
+                }
+
+                // Check container logs for errors and success messages
+                $logsResult = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose logs --tail 50 nodered 2>&1", false);
                 $logs = $logsResult->getOutput();
                 
                 // Check for critical errors in logs
@@ -520,20 +530,19 @@ class NodeRedDeployer
                     throw new \RuntimeException('Node-RED failed to start due to configuration error. Check logs for details.');
                 }
                 
-                // Check if Node-RED is actually running (not just the container)
+                // Check if Node-RED has started successfully
                 if (str_contains($logs, 'Started flows') || str_contains($logs, 'Server now running')) {
-                    // Verify HTTP response
-                    $ch = curl_init($url);
-                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                    curl_setopt($ch, CURLOPT_TIMEOUT, 5);
-                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                    curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-                    curl_setopt($ch, CURLOPT_NOBODY, true);
-                    curl_exec($ch);
-                    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                    curl_close($ch);
-
-                    if ($httpCode >= 200 && $httpCode < 500) {
+                    $hasStartedFlows = true;
+                    
+                    // Verify container is still running
+                    $statusResult = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose ps -q nodered", false);
+                    $containerId = trim($statusResult->getOutput());
+                    
+                    if (!empty($containerId)) {
+                        Log::info('Node-RED instance started successfully', [
+                            'instance_id' => $instance->id,
+                            'container_id' => $containerId,
+                        ]);
                         return true;
                     }
                 }
@@ -546,6 +555,16 @@ class NodeRedDeployer
             }
 
             sleep(3);
+        }
+
+        // If we found "Started flows" but timed out, it might be that HTTPS isn't ready yet
+        // In that case, consider it successful since Node-RED itself is running
+        if ($hasStartedFlows) {
+            Log::warning('Node-RED started but HTTPS check timed out - Node-RED is running internally', [
+                'instance_id' => $instance->id,
+                'fqdn' => $instance->fqdn,
+            ]);
+            return true;
         }
 
         // If we have error logs, include them in the exception

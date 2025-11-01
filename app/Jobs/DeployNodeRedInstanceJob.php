@@ -207,21 +207,47 @@ class DeployNodeRedInstanceJob implements ShouldQueue
                 throw new \RuntimeException('Node-RED deployment failed');
             }
 
-            // Create DNS record
-            $dns = new CloudflareDns();
-            $dnsRecord = $dns->ensureARecord($instance->subdomain, $instance->server->public_ip);
-
-            // Create domain record
-            Domain::updateOrCreate(
-                ['node_red_instance_id' => $instance->id],
-                [
-                    'hostname' => $instance->subdomain,
+            // Create DNS record (don't fail deployment if DNS fails)
+            try {
+                Log::info('Creating DNS record for instance', [
+                    'instance_id' => $instance->id,
+                    'subdomain' => $instance->subdomain,
                     'fqdn' => $instance->fqdn,
-                    'provider' => 'cloudflare',
-                    'provider_record_id' => (string) $dnsRecord['id'],
-                    'ssl_status' => 'pending',
-                ]
-            );
+                    'server_ip' => $instance->server->public_ip,
+                ]);
+
+                $dns = new CloudflareDns();
+                $dnsRecord = $dns->ensureARecord($instance->subdomain, $instance->server->public_ip);
+
+                Log::info('DNS record created successfully', [
+                    'instance_id' => $instance->id,
+                    'subdomain' => $instance->subdomain,
+                    'dns_record_id' => $dnsRecord['id'] ?? 'unknown',
+                ]);
+
+                // Create domain record
+                Domain::updateOrCreate(
+                    ['node_red_instance_id' => $instance->id],
+                    [
+                        'hostname' => $instance->subdomain,
+                        'fqdn' => $instance->fqdn,
+                        'provider' => 'cloudflare',
+                        'provider_record_id' => (string) ($dnsRecord['id'] ?? ''),
+                        'ssl_status' => 'pending',
+                    ]
+                );
+            } catch (\Exception $dnsException) {
+                Log::error('DNS record creation failed (non-fatal)', [
+                    'instance_id' => $instance->id,
+                    'subdomain' => $instance->subdomain,
+                    'fqdn' => $instance->fqdn,
+                    'error' => $dnsException->getMessage(),
+                    'trace' => $dnsException->getTraceAsString(),
+                ]);
+                // Don't throw - deployment succeeded, DNS can be created later
+                // Dispatch a separate job to retry DNS creation
+                EnsureDnsRecordJob::dispatch($instance->id)->delay(now()->addMinutes(1));
+            }
 
             // Update capacity
             $capacityPlanner = app(CapacityPlanner::class);

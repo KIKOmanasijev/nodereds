@@ -107,21 +107,46 @@ class CloudflareDns
      */
     private function createRecord(array $data): array
     {
+        Log::info('Creating Cloudflare DNS record', [
+            'zone_id' => $this->zoneId,
+            'record_data' => $data,
+        ]);
+
         $response = $this->client->post("/zones/{$this->zoneId}/dns_records", $data);
 
         if ($response->failed()) {
+            $errorBody = $response->body();
+            $errorJson = $response->json();
+            
             Log::error('Cloudflare DNS create failed', [
+                'zone_id' => $this->zoneId,
                 'data' => $data,
                 'status' => $response->status(),
-                'body' => $response->body(),
+                'body' => $errorBody,
+                'errors' => $errorJson['errors'] ?? [],
             ]);
-            throw new \RuntimeException('Failed to create Cloudflare DNS record: ' . $response->body());
+            
+            $errorMessages = array_map(fn($e) => $e['message'] ?? '', $errorJson['errors'] ?? []);
+            $errorMessage = !empty($errorMessages) ? implode(', ', $errorMessages) : $errorBody;
+            
+            throw new \RuntimeException('Failed to create Cloudflare DNS record: ' . $errorMessage);
         }
 
         $result = $response->json()['result'] ?? null;
         if (!$result) {
+            Log::error('Invalid response from Cloudflare API', [
+                'zone_id' => $this->zoneId,
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
             throw new \RuntimeException('Invalid response from Cloudflare API');
         }
+
+        Log::info('Cloudflare DNS record created successfully', [
+            'zone_id' => $this->zoneId,
+            'record_id' => $result['id'] ?? 'unknown',
+            'name' => $result['name'] ?? 'unknown',
+        ]);
 
         return $result;
     }
