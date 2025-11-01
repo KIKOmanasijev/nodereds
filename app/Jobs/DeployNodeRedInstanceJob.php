@@ -208,22 +208,37 @@ class DeployNodeRedInstanceJob implements ShouldQueue
                 Log::info('Traefik is not running, bootstrapping Traefik before deploying Node-RED instance', [
                     'instance_id' => $instance->id,
                     'server_id' => $instance->server->id,
+                    'server_ip' => $instance->server->public_ip,
                 ]);
 
-                $bootstrapper = new \App\Services\Provisioning\TraefikBootstrapper($instance->server);
-                $bootstrapSuccess = $bootstrapper->bootstrap();
+                try {
+                    $bootstrapper = new \App\Services\Provisioning\TraefikBootstrapper($instance->server);
+                    $bootstrapSuccess = $bootstrapper->bootstrap();
 
-                if (!$bootstrapSuccess) {
-                    throw new \RuntimeException('Traefik bootstrap failed. Cannot deploy Node-RED instance without Traefik running.');
+                    if (!$bootstrapSuccess) {
+                        throw new \RuntimeException(
+                            'Traefik bootstrap failed. Cannot deploy Node-RED instance without Traefik running. ' .
+                            'Please check server logs and ensure SSH connectivity is working.'
+                        );
+                    }
+
+                    Log::info('Traefik bootstrapped successfully, proceeding with Node-RED deployment', [
+                        'instance_id' => $instance->id,
+                        'server_id' => $instance->server->id,
+                    ]);
+
+                    // Wait a moment for Traefik to fully start
+                    sleep(5);
+                } catch (\RuntimeException $e) {
+                    // Re-throw with more context
+                    throw new \RuntimeException(
+                        "Failed to bootstrap Traefik on server {$instance->server->name} ({$instance->server->public_ip}): {$e->getMessage()}. " .
+                        "Please verify: " .
+                        "1. SSH key is configured correctly (HETZNER_SSH_KEY_NAME matches Hetzner Cloud). " .
+                        "2. Server is fully booted and accessible. " .
+                        "3. Check server logs for more details."
+                    );
                 }
-
-                Log::info('Traefik bootstrapped successfully, proceeding with Node-RED deployment', [
-                    'instance_id' => $instance->id,
-                    'server_id' => $instance->server->id,
-                ]);
-
-                // Wait a moment for Traefik to fully start
-                sleep(5);
             }
 
             // Deploy Node-RED
