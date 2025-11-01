@@ -706,25 +706,67 @@ class NodeRedDeployer
                 'network_name' => $networkName,
             ]);
 
-            // Ensure edge network exists
+            // Ensure edge network exists - try multiple methods to check
+            $networkExists = false;
             $networkCheck = $this->ssh->execute("docker network inspect {$networkName}", false);
-            if (!$networkCheck->isSuccess()) {
-                Log::info('Creating edge network', [
+            
+            if ($networkCheck->isSuccess()) {
+                $networkExists = true;
+                Log::info('Edge network exists', [
                     'instance_id' => $instance->id,
                     'network_name' => $networkName,
                 ]);
+            } else {
+                // Try alternative check: list all networks
+                $listNetworks = $this->ssh->execute("docker network ls --filter name={$networkName} --format '{{.Name}}'", false);
+                if ($listNetworks->isSuccess() && !empty(trim($listNetworks->getOutput()))) {
+                    $networkExists = true;
+                    Log::info('Edge network exists (found via network ls)', [
+                        'instance_id' => $instance->id,
+                        'network_name' => $networkName,
+                    ]);
+                }
+            }
+
+            if (!$networkExists) {
+                $checkError = $networkCheck->getErrorOutput();
+                Log::info('Edge network not found, attempting to create', [
+                    'instance_id' => $instance->id,
+                    'network_name' => $networkName,
+                    'check_error' => $checkError,
+                ]);
+                
                 $createResult = $this->ssh->execute("docker network create {$networkName}", false);
                 if (!$createResult->isSuccess()) {
                     $error = $createResult->getErrorOutput();
-                    // If network already exists, that's fine
-                    if (str_contains($error, 'already exists') || str_contains($error, 'already')) {
-                        Log::info('Edge network already exists, continuing', [
+                    Log::error('Failed to create edge network', [
+                        'instance_id' => $instance->id,
+                        'network_name' => $networkName,
+                        'error' => $error,
+                        'exit_code' => $createResult->exitCode,
+                        'output' => $createResult->getOutput(),
+                    ]);
+                    
+                    // If network already exists, that's fine - continue
+                    if (str_contains($error, 'already exists') || str_contains($error, 'already') || str_contains($error, 'exists')) {
+                        Log::info('Edge network already exists (creation error was false positive), continuing', [
                             'instance_id' => $instance->id,
                             'network_name' => $networkName,
                         ]);
                     } else {
-                        throw new \RuntimeException("Failed to create edge network: {$networkName}. Error: {$error}");
+                        // Still throw, but with more context
+                        throw new \RuntimeException(
+                            "Failed to create edge network '{$networkName}'. " .
+                            "Error: {$error}. " .
+                            "Exit code: {$createResult->exitCode}. " .
+                            "Please check if Docker is running and you have permissions to create networks."
+                        );
                     }
+                } else {
+                    Log::info('Edge network created successfully', [
+                        'instance_id' => $instance->id,
+                        'network_name' => $networkName,
+                    ]);
                 }
             }
 
@@ -848,12 +890,24 @@ class NodeRedDeployer
 
             return true;
         } catch (\Exception $e) {
+            $networkName = config('provisioning.docker.network_name', 'edge');
+            $containerName = "nodered_{$instance->slug}";
+            
             Log::error('Failed to fix network connectivity', [
                 'instance_id' => $instance->id,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
             ]);
-            return false;
+            
+            // Re-throw with more context
+            throw new \RuntimeException(
+                "Failed to fix network connectivity for instance {$instance->id}: {$e->getMessage()}. " .
+                "Please check server logs for details. Container: {$containerName}, Network: {$networkName}",
+                0,
+                $e
+            );
         }
     }
 
