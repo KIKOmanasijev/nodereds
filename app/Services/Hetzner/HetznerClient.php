@@ -83,7 +83,7 @@ class HetznerClient
             'location' => $config['location'] ?? null,
             'datacenter' => $config['datacenter'] ?? null,
             'start_after_create' => true,
-            // 'ssh_keys' => $sshKeys,
+            'ssh_keys' => $sshKeys,
         ];
 
         // Only include networks if provided and not empty
