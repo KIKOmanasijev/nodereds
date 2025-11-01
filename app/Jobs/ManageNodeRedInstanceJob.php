@@ -92,11 +92,7 @@ class ManageNodeRedInstanceJob implements ShouldQueue
             if (in_array($this->action, ['start', 'restart'])) {
                 $instance->update(['status' => 'active']);
             } elseif ($this->action === 'stop') {
-                // Keep status as deploying for now, will be updated when container is verified stopped
-                // Actually, let's set it to active but the container will be stopped
-                // The status 'active' here means the instance exists, not that it's running
-                // We could use a different status for stopped instances, but for now keep it simple
-                $instance->update(['status' => 'active']);
+                $instance->update(['status' => 'stopped']);
             }
 
             // Update deployment record as successful
