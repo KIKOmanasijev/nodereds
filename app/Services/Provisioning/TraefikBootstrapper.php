@@ -23,14 +23,32 @@ class TraefikBootstrapper
     public function bootstrap(): bool
     {
         try {
+            Log::info('Starting server bootstrap', [
+                'server_host' => $this->ssh->getHost(),
+            ]);
+
             // Install Docker if not present
             if (!$this->isDockerInstalled()) {
+                Log::info('Docker not found, installing...', [
+                    'server_host' => $this->ssh->getHost(),
+                ]);
                 $this->installDocker();
+            } else {
+                Log::info('Docker already installed, skipping installation', [
+                    'server_host' => $this->ssh->getHost(),
+                ]);
             }
 
             // Install Docker Compose if not present
             if (!$this->isDockerComposeInstalled()) {
+                Log::info('Docker Compose not found, installing...', [
+                    'server_host' => $this->ssh->getHost(),
+                ]);
                 $this->installDockerCompose();
+            } else {
+                Log::info('Docker Compose already installed, skipping installation', [
+                    'server_host' => $this->ssh->getHost(),
+                ]);
             }
 
             // Create Docker network
@@ -45,11 +63,16 @@ class TraefikBootstrapper
             // Start Traefik
             $this->startTraefik();
 
+            Log::info('Server bootstrap completed successfully', [
+                'server_host' => $this->ssh->getHost(),
+            ]);
+
             return true;
         } catch (\Exception $e) {
             Log::error('Traefik bootstrap failed', [
                 'server_host' => $this->ssh->getHost(),
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
             return false;
         }
@@ -69,25 +92,60 @@ class TraefikBootstrapper
      */
     private function installDocker(): void
     {
+        Log::info('Installing Docker on server', [
+            'server_host' => $this->ssh->getHost(),
+        ]);
+
         $commands = [
-            'apt-get update',
-            'apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release',
+            'apt-get update -qq',
+            'apt-get install -y -qq apt-transport-https ca-certificates curl gnupg lsb-release',
             'install -m 0755 -d /etc/apt/keyrings',
             'curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg',
             'chmod a+r /etc/apt/keyrings/docker.gpg',
             'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null',
-            'apt-get update',
-            'apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin',
+            'apt-get update -qq',
+            'apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin',
             'systemctl enable docker',
             'systemctl start docker',
         ];
 
-        foreach ($commands as $command) {
+        foreach ($commands as $index => $command) {
+            Log::debug('Executing Docker installation command', [
+                'server_host' => $this->ssh->getHost(),
+                'step' => $index + 1,
+                'total' => count($commands),
+                'command' => $command,
+            ]);
+
             $result = $this->ssh->execute($command);
             if (!$result->isSuccess()) {
-                throw new \RuntimeException("Failed to install Docker: {$command}");
+                Log::error('Docker installation command failed', [
+                    'server_host' => $this->ssh->getHost(),
+                    'command' => $command,
+                    'error' => $result->getErrorOutput(),
+                    'output' => $result->getOutput(),
+                ]);
+                throw new \RuntimeException("Failed to install Docker: {$command}. Error: {$result->getErrorOutput()}");
             }
         }
+
+        // Wait a moment for Docker daemon to start
+        sleep(2);
+
+        // Verify Docker is working
+        $verifyResult = $this->ssh->execute('docker --version', false);
+        if (!$verifyResult->isSuccess()) {
+            Log::error('Docker installation verification failed', [
+                'server_host' => $this->ssh->getHost(),
+                'error' => $verifyResult->getErrorOutput(),
+            ]);
+            throw new \RuntimeException('Docker was installed but verification failed: ' . $verifyResult->getErrorOutput());
+        }
+
+        Log::info('Docker installed successfully', [
+            'server_host' => $this->ssh->getHost(),
+            'docker_version' => trim($verifyResult->getOutput()),
+        ]);
     }
 
     /**
@@ -96,6 +154,11 @@ class TraefikBootstrapper
     private function isDockerComposeInstalled(): bool
     {
         $result = $this->ssh->execute('docker compose version', false);
+        if (!$result->isSuccess()) {
+            Log::debug('Docker Compose not found, will attempt to use standalone version', [
+                'server_host' => $this->ssh->getHost(),
+            ]);
+        }
         return $result->isSuccess();
     }
 

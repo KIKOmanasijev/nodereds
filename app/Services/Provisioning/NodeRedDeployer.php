@@ -23,11 +23,87 @@ class NodeRedDeployer
     }
 
     /**
+     * Ensure Docker is installed on the server.
+     */
+    private function ensureDockerInstalled(): void
+    {
+        // Check if Docker is installed
+        $result = $this->ssh->execute('command -v docker', false);
+        
+        if (!$result->isSuccess()) {
+            Log::info('Docker not found, installing Docker...', [
+                'server_id' => $this->server->id,
+            ]);
+            
+            // Install Docker using the same method as TraefikBootstrapper
+            $commands = [
+                'apt-get update -qq',
+                'apt-get install -y -qq apt-transport-https ca-certificates curl gnupg lsb-release',
+                'install -m 0755 -d /etc/apt/keyrings',
+                'curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg',
+                'chmod a+r /etc/apt/keyrings/docker.gpg',
+                'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null',
+                'apt-get update -qq',
+                'apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin',
+                'systemctl enable docker',
+                'systemctl start docker',
+            ];
+
+            foreach ($commands as $command) {
+                $cmdResult = $this->ssh->execute($command);
+                if (!$cmdResult->isSuccess()) {
+                    Log::error('Failed to install Docker', [
+                        'server_id' => $this->server->id,
+                        'command' => $command,
+                        'error' => $cmdResult->getErrorOutput(),
+                    ]);
+                    throw new \RuntimeException("Failed to install Docker: {$command}");
+                }
+            }
+            
+            Log::info('Docker installed successfully', [
+                'server_id' => $this->server->id,
+            ]);
+            
+            // Wait a moment for Docker daemon to start
+            sleep(2);
+            
+            // Verify Docker is working (use full path or check PATH)
+            $verifyResult = $this->ssh->execute('PATH=/usr/bin:/usr/sbin:/bin:/sbin docker --version', false);
+            if (!$verifyResult->isSuccess()) {
+                // Try without PATH modification
+                $verifyResult = $this->ssh->execute('docker --version', false);
+                if (!$verifyResult->isSuccess()) {
+                    throw new \RuntimeException('Docker was installed but verification failed');
+                }
+            }
+            
+            Log::info('Docker verification successful', [
+                'server_id' => $this->server->id,
+                'docker_version' => trim($verifyResult->getOutput()),
+            ]);
+        }
+        
+        // Ensure Docker Compose is available
+        $composeResult = $this->ssh->execute('docker compose version', false);
+        if (!$composeResult->isSuccess()) {
+            Log::warning('Docker Compose not found, but Docker is installed', [
+                'server_id' => $this->server->id,
+            ]);
+            // Docker Compose v2 should come with docker-ce, but if not, we'll continue anyway
+            // as it might just be a PATH issue
+        }
+    }
+
+    /**
      * Deploy a Node-RED instance.
      */
     public function deploy(NodeRedInstance $instance): bool
     {
         try {
+            // Ensure Docker is installed before deploying
+            $this->ensureDockerInstalled();
+
             $instancePath = "{$this->noderedPath}/{$instance->slug}";
 
             // Create instance directory
@@ -264,7 +340,36 @@ class NodeRedDeployer
 
         $composeContent = str_replace(array_keys($replacements), array_values($replacements), $template);
 
-        $this->ssh->uploadContent($composeContent, "{$instancePath}/docker-compose.yml");
+        $composeFilePath = "{$instancePath}/docker-compose.yml";
+        
+        Log::info('Uploading docker-compose.yml file', [
+            'instance_id' => $instance->id,
+            'instance_path' => $instancePath,
+            'compose_file_path' => $composeFilePath,
+        ]);
+
+        $success = $this->ssh->uploadContent($composeContent, $composeFilePath);
+        
+        if (!$success) {
+            throw new \RuntimeException('Failed to upload docker-compose.yml file to server.');
+        }
+
+        // Verify file was uploaded correctly
+        if (!$this->ssh->fileExists($composeFilePath)) {
+            throw new \RuntimeException("docker-compose.yml file was not created on server at: {$composeFilePath}");
+        }
+
+        // Verify file has content
+        $verifyResult = $this->ssh->execute("wc -l " . escapeshellarg($composeFilePath), false);
+        if (!$verifyResult->isSuccess()) {
+            throw new \RuntimeException('Failed to verify docker-compose.yml file on server.');
+        }
+
+        Log::info('docker-compose.yml file uploaded successfully', [
+            'instance_id' => $instance->id,
+            'compose_file_path' => $composeFilePath,
+            'file_lines' => trim($verifyResult->getOutput()),
+        ]);
     }
 
     /**
@@ -272,8 +377,32 @@ class NodeRedDeployer
      */
     private function startContainer(string $instancePath): void
     {
-        $result = $this->ssh->execute("cd {$instancePath} && docker compose up -d");
+        $composeFilePath = "{$instancePath}/docker-compose.yml";
+        
+        // Verify compose file exists before starting
+        if (!$this->ssh->fileExists($composeFilePath)) {
+            // List directory contents for debugging
+            $lsResult = $this->ssh->execute("ls -la " . escapeshellarg($instancePath), false);
+            Log::error('docker-compose.yml file not found', [
+                'instance_path' => $instancePath,
+                'compose_file' => $composeFilePath,
+                'directory_contents' => $lsResult->getOutput(),
+            ]);
+            throw new \RuntimeException("docker-compose.yml file not found at: {$composeFilePath}");
+        }
+
+        // Change to directory and run docker compose (it will auto-detect docker-compose.yml)
+        $result = $this->ssh->execute("cd " . escapeshellarg($instancePath) . " && docker compose up -d");
         if (!$result->isSuccess()) {
+            // Additional debugging: check if docker compose command exists
+            $composeCheck = $this->ssh->execute("docker compose version", false);
+            Log::error('Failed to start Node-RED container', [
+                'instance_path' => $instancePath,
+                'compose_file' => $composeFilePath,
+                'error' => $result->getErrorOutput(),
+                'output' => $result->getOutput(),
+                'docker_compose_version' => $composeCheck->isSuccess() ? $composeCheck->getOutput() : 'docker compose not found',
+            ]);
             throw new \RuntimeException("Failed to start Node-RED container: {$result->getErrorOutput()}");
         }
     }
