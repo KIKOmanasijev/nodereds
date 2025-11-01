@@ -106,7 +106,7 @@
                                                     {{ __('Cancel') }}
                                                 </flux:button>
                                             </div>
-                                        @else
+                                        @else 
                                             <div class="flex items-center gap-2">
                                                 <span>{{ $instance->subdomain }}</span>
                                                 @if(Gate::allows('update', $instance))
