@@ -217,6 +217,12 @@
                 </flux:button>
                 @endif
 
+                <div class="border-t border-neutral-200 dark:border-neutral-700 pt-3 mt-3">
+                    <flux:button wire:click="deleteServer" wire:confirm="Are you sure you want to delete this server? This will also delete it from Hetzner Cloud. This action cannot be undone." variant="danger" class="w-full justify-start" icon="trash" size="sm">
+                        {{ __('Delete Server') }}
+                    </flux:button>
+                </div>
+
                 <div class="rounded-lg bg-neutral-50 dark:bg-neutral-900/50 p-3">
                     <h3 class="mb-2 text-xs font-medium">{{ __('Server Information') }}</h3>
                     <dl class="space-y-1.5 text-xs">

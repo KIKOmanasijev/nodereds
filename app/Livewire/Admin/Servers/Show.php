@@ -137,6 +137,87 @@ class Show extends Component
         }
     }
 
+    public function deleteServer(): void
+    {
+        Gate::authorize('delete', $this->server);
+
+        // Check if server has instances
+        $instanceCount = $this->server->nodeRedInstances()->count();
+        if ($instanceCount > 0) {
+            $this->dispatch('notify', [
+                'type' => 'error',
+                'message' => "Cannot delete server. It has {$instanceCount} Node-RED instance(s). Please delete all instances first.",
+            ]);
+            return;
+        }
+
+        try {
+            // Delete from Hetzner if provider_id exists
+            if ($this->server->provider_id) {
+                $hetznerClient = app(HetznerClient::class);
+                
+                Log::info('Deleting server from Hetzner Cloud', [
+                    'server_id' => $this->server->id,
+                    'provider_id' => $this->server->provider_id,
+                    'server_name' => $this->server->name,
+                ]);
+                
+                $success = $hetznerClient->deleteServer((int) $this->server->provider_id);
+
+                if (!$success) {
+                    Log::error('Failed to delete server from Hetzner Cloud', [
+                        'server_id' => $this->server->id,
+                        'provider_id' => $this->server->provider_id,
+                    ]);
+                    
+                    $this->dispatch('notify', [
+                        'type' => 'error',
+                        'message' => 'Failed to delete server from Hetzner Cloud. Please check logs and try again.',
+                    ]);
+                    return;
+                }
+                
+                Log::info('Successfully deleted server from Hetzner Cloud', [
+                    'server_id' => $this->server->id,
+                    'provider_id' => $this->server->provider_id,
+                ]);
+            } else {
+                Log::warning('Cannot delete server from Hetzner: no provider_id', [
+                    'server_id' => $this->server->id,
+                    'server_name' => $this->server->name,
+                ]);
+            }
+
+            // Delete from database
+            $serverName = $this->server->name;
+            $serverId = $this->server->id;
+            $this->server->delete();
+
+            Log::info('Server deleted successfully from database', [
+                'server_name' => $serverName,
+                'server_id' => $serverId,
+            ]);
+
+            $this->dispatch('notify', [
+                'type' => 'success',
+                'message' => 'Server deleted successfully from Hetzner Cloud and database.',
+            ]);
+
+            // Redirect to servers index
+            $this->redirect(route('admin.servers.index'));
+        } catch (\Exception $e) {
+            Log::error('Failed to delete server', [
+                'server_id' => $this->server->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            $this->dispatch('notify', [
+                'type' => 'error',
+                'message' => 'Error deleting server: ' . $e->getMessage(),
+            ]);
+        }
+    }
+
     public function render()
     {
         $this->server->load([
