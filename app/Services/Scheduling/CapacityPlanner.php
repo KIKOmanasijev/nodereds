@@ -272,7 +272,7 @@ class CapacityPlanner
     /**
      * Get server specs from server type.
      */
-    private function getServerSpecs(string $serverType): array
+    public function getServerSpecs(string $serverType): array
     {
         $serverTypes = $this->hetznerClient->getServerTypes();
 

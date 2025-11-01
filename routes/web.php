@@ -4,6 +4,7 @@ use App\Livewire\Admin\Instances\Create;
 use App\Livewire\Admin\Instances\Index as InstancesIndex;
 use App\Livewire\Admin\Instances\Show as InstancesShow;
 use App\Livewire\Admin\Plans\Index as PlansIndex;
+use App\Livewire\Admin\Servers\Create as ServersCreate;
 use App\Livewire\Admin\Servers\Index as ServersIndex;
 use App\Livewire\Admin\Servers\Show as ServersShow;
 use App\Livewire\Settings\Appearance;
@@ -42,6 +43,7 @@ Route::middleware(['auth'])->group(function () {
     // Admin routes
     Route::middleware(['can:super-admin'])->prefix('admin')->name('admin.')->group(function () {
         Route::get('servers', ServersIndex::class)->name('servers.index');
+        Route::get('servers/create', ServersCreate::class)->name('servers.create');
         Route::get('servers/{server}', ServersShow::class)->name('servers.show');
         Route::get('instances', InstancesIndex::class)->name('instances.index');
         Route::get('instances/create', Create::class)->name('instances.create');
