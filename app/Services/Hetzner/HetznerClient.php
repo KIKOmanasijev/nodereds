@@ -189,6 +189,19 @@ class HetznerClient
     }
 
     /**
+     * Map Hetzner server status to our internal status.
+     */
+    public function mapHetznerStatusToInternal(string $hetznerStatus): string
+    {
+        return match ($hetznerStatus) {
+            'running' => 'active',
+            'initializing', 'starting', 'rebuilding' => 'provisioning',
+            'stopping', 'off', 'deleting', 'migrating', 'unknown' => 'error',
+            default => 'error',
+        };
+    }
+
+    /**
      * Delete a server.
      */
     public function deleteServer(int $serverId): bool

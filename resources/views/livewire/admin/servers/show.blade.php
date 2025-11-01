@@ -205,6 +205,9 @@
         <div class="rounded-xl border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-5 shadow-sm">
             <h2 class="mb-3 text-base font-semibold">{{ __('Server Actions') }}</h2>
             <div class="space-y-3">
+                <flux:button wire:click="checkServerStatus" variant="outline" class="w-full justify-start" icon="arrow-path" size="sm">
+                    {{ __('Check Server Status') }}
+                </flux:button>
                 @if($server->status === 'active')
                 <flux:button wire:click="restartTraefik" variant="outline" class="w-full justify-start" icon="arrow-path" size="sm">
                     {{ __('Restart Traefik') }}

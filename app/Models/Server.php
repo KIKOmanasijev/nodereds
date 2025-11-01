@@ -71,4 +71,40 @@ class Server extends Model
     {
         return $this->available_memory_mb >= $memoryMb && $this->available_disk_gb >= $storageGb;
     }
+
+    /**
+     * Sync server status from Hetzner API.
+     */
+    public function syncStatusFromHetzner(): bool
+    {
+        if (!$this->provider_id) {
+            return false;
+        }
+
+        try {
+            $hetznerClient = app(\App\Services\Hetzner\HetznerClient::class);
+            $hetznerServer = $hetznerClient->getServer((int) $this->provider_id);
+            
+            $hetznerStatus = $hetznerServer['status'] ?? null;
+            if (!$hetznerStatus) {
+                return false;
+            }
+
+            $internalStatus = $hetznerClient->mapHetznerStatusToInternal($hetznerStatus);
+            
+            if ($this->status !== $internalStatus) {
+                $this->status = $internalStatus;
+                $this->save();
+            }
+
+            return true;
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::error('Failed to sync server status from Hetzner', [
+                'server_id' => $this->id,
+                'provider_id' => $this->provider_id,
+                'error' => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
 }

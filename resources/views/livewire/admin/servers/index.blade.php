@@ -34,9 +34,14 @@
                             </span>
                         </td>
                         <td class="px-4 py-3">
-                            <flux:link href="{{ route('admin.servers.show', $server) }}" class="text-sm">
-                                {{ __('View') }}
-                            </flux:link>
+                            <div class="flex items-center gap-2">
+                                <flux:link href="{{ route('admin.servers.show', $server) }}" class="text-sm">
+                                    {{ __('View') }}
+                                </flux:link>
+                                <flux:button wire:click="checkServerStatus({{ $server->id }})" variant="ghost" size="sm" icon="arrow-path" class="text-xs">
+                                    {{ __('Check Status') }}
+                                </flux:button>
+                            </div>
                         </td>
                     </tr>
                 @empty

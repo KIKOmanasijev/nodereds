@@ -105,6 +105,38 @@ class Show extends Component
         $this->server->refresh();
     }
 
+    public function checkServerStatus(): void
+    {
+        Gate::authorize('view', $this->server);
+
+        try {
+            $success = $this->server->syncStatusFromHetzner();
+
+            if ($success) {
+                $this->server->refresh();
+                $this->dispatch('notify', [
+                    'type' => 'success',
+                    'message' => 'Server status updated successfully.',
+                ]);
+            } else {
+                $this->dispatch('notify', [
+                    'type' => 'error',
+                    'message' => 'Failed to check server status. Please check logs.',
+                ]);
+            }
+        } catch (\Exception $e) {
+            Log::error('Failed to check server status', [
+                'server_id' => $this->server->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            $this->dispatch('notify', [
+                'type' => 'error',
+                'message' => 'Error checking server status: ' . $e->getMessage(),
+            ]);
+        }
+    }
+
     public function render()
     {
         $this->server->load([
