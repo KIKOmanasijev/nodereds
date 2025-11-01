@@ -832,33 +832,69 @@ class NodeRedDeployer
                 }
             }
 
-            // Check Traefik status
+            // Check Traefik status and start if not running
             $traefikPath = config('provisioning.docker.traefik_path', '/opt/traefik');
             $traefikCheck = $this->ssh->execute("cd {$traefikPath} && docker compose ps -q traefik", false);
             $traefikRunning = $traefikCheck->isSuccess() && !empty(trim($traefikCheck->getOutput()));
 
             if (!$traefikRunning) {
-                Log::error('Traefik is not running - this is required for routing', [
+                Log::warning('Traefik is not running, attempting to start it', [
                     'instance_id' => $instance->id,
                     'traefik_path' => $traefikPath,
                 ]);
-                throw new \RuntimeException('Traefik is not running. Please start Traefik first on the server.');
-            }
+                
+                // Check if Traefik compose file exists
+                $composeExists = $this->ssh->execute("test -f {$traefikPath}/docker-compose.yml", false);
+                if (!$composeExists->isSuccess()) {
+                    Log::error('Traefik docker-compose.yml not found', [
+                        'instance_id' => $instance->id,
+                        'traefik_path' => $traefikPath,
+                    ]);
+                    throw new \RuntimeException(
+                        "Traefik is not running and docker-compose.yml not found at {$traefikPath}. " .
+                        "Please bootstrap Traefik first via the server provisioning job."
+                    );
+                }
 
-            // Restart Traefik to force it to rediscover containers
-            Log::info('Restarting Traefik to rediscover containers', [
-                'instance_id' => $instance->id,
-            ]);
-            $traefikRestart = $this->ssh->execute("cd {$traefikPath} && docker compose restart traefik", false);
-            if (!$traefikRestart->isSuccess()) {
-                Log::warning('Failed to restart Traefik', [
+                // Try to start Traefik
+                $startResult = $this->ssh->execute("cd {$traefikPath} && docker compose up -d traefik", false);
+                if (!$startResult->isSuccess()) {
+                    Log::error('Failed to start Traefik', [
+                        'instance_id' => $instance->id,
+                        'traefik_path' => $traefikPath,
+                        'error' => $startResult->getErrorOutput(),
+                        'output' => $startResult->getOutput(),
+                    ]);
+                    throw new \RuntimeException(
+                        "Traefik is not running and failed to start it. " .
+                        "Error: {$startResult->getErrorOutput()}. " .
+                        "Please check Traefik logs: cd {$traefikPath} && docker compose logs traefik"
+                    );
+                }
+
+                Log::info('Traefik started successfully', [
                     'instance_id' => $instance->id,
-                    'error' => $traefikRestart->getErrorOutput(),
+                    'traefik_path' => $traefikPath,
                 ]);
-            }
 
-            // Wait a moment for Traefik to restart
-            sleep(3);
+                // Wait for Traefik to start
+                sleep(5);
+            } else {
+                // Restart Traefik to force it to rediscover containers
+                Log::info('Restarting Traefik to rediscover containers', [
+                    'instance_id' => $instance->id,
+                ]);
+                $traefikRestart = $this->ssh->execute("cd {$traefikPath} && docker compose restart traefik", false);
+                if (!$traefikRestart->isSuccess()) {
+                    Log::warning('Failed to restart Traefik', [
+                        'instance_id' => $instance->id,
+                        'error' => $traefikRestart->getErrorOutput(),
+                    ]);
+                } else {
+                    // Wait a moment for Traefik to restart
+                    sleep(3);
+                }
+            }
 
             // If container wasn't on network or wasn't running, restart it to ensure Traefik picks it up
             if (!$onNetwork || !$isRunning) {
