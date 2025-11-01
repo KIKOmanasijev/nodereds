@@ -27,6 +27,10 @@ class Show extends Component
     public string $logs = '';
     public int $logLines = 100;
     
+    // Instance running status (lazy loaded)
+    public ?bool $isRunning = null;
+    public bool $isCheckingStatus = false;
+    
     // Security tab - User management
     public ?int $editingUserId = null;
     public string $username = '';
@@ -45,6 +49,33 @@ class Show extends Component
     {
         $this->instance = $instance;
         Gate::authorize('view', $instance);
+        
+        // Don't check status synchronously - let it load lazily
+        $this->isRunning = null;
+    }
+
+    public function checkInstanceStatus(): void
+    {
+        if ($this->isCheckingStatus) {
+            return; // Already checking
+        }
+        
+        $this->isCheckingStatus = true;
+        
+        if (!$this->instance->server) {
+            $this->isRunning = false;
+            $this->isCheckingStatus = false;
+            return;
+        }
+
+        try {
+            $deployer = new NodeRedDeployer($this->instance->server);
+            $this->isRunning = $deployer->isRunning($this->instance);
+        } catch (\Exception $e) {
+            $this->isRunning = false;
+        } finally {
+            $this->isCheckingStatus = false;
+        }
     }
 
     public function setTab(string $tab): void
@@ -464,7 +495,6 @@ class Show extends Component
             'message' => 'Instance migration queued. The instance will be moved to the new server shortly.',
         ]);
 
-        $this->showMoveForm = false;
         $this->targetServerId = null;
         $this->instance->refresh();
     }
@@ -483,20 +513,9 @@ class Show extends Component
             'nodeRedUsers'
         ]);
 
-        // Check if instance is running
-        $isRunning = false;
-        if ($this->instance->server) {
-            try {
-                $deployer = new NodeRedDeployer($this->instance->server);
-                $isRunning = $deployer->isRunning($this->instance);
-            } catch (\Exception $e) {
-                $isRunning = false;
-            }
-        }
-
         return view('livewire.admin.instances.show', [
             'instance' => $this->instance,
-            'isRunning' => $isRunning,
+            'isRunning' => $this->isRunning ?? false, // Default to false if not checked yet
             'servers' => Gate::allows('super-admin') ? Server::where('status', 'active')->orderBy('name')->get() : collect(),
         ]);
     }
