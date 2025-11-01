@@ -47,8 +47,8 @@ return [
     ],
 
     'testing' => [
-        'reuse_existing_servers' => env('REUSE_EXISTING_SERVERS', true), // For testing: always reuse existing servers
-        'hardcoded_server_id' => env('HARDCODED_SERVER_ID', 3), // For testing: always use this server ID
+        'reuse_existing_servers' => env('REUSE_EXISTING_SERVERS', false), // For testing: always reuse existing servers
+        'hardcoded_server_id' => env('HARDCODED_SERVER_ID', null), // For testing: always use this server ID
     ],
 
 ];
