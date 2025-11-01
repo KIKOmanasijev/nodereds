@@ -27,6 +27,9 @@ class TraefikBootstrapper
                 'server_host' => $this->ssh->getHost(),
             ]);
 
+            // Ensure SSH connection works before proceeding
+            $this->ensureSshConnection();
+
             // Setup SSH key first to ensure we can connect
             $this->setupSshKey();
 
@@ -79,6 +82,58 @@ class TraefikBootstrapper
             ]);
             return false;
         }
+    }
+
+    /**
+     * Ensure SSH connection is working before proceeding.
+     * Retries connection with exponential backoff.
+     */
+    private function ensureSshConnection(): void
+    {
+        $maxAttempts = 10;
+        $baseDelay = 5; // Start with 5 seconds
+        
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                $testResult = $this->ssh->testConnection();
+                
+                if ($testResult) {
+                    Log::info('SSH connection successful', [
+                        'server_host' => $this->ssh->getHost(),
+                        'attempt' => $attempt,
+                    ]);
+                    return;
+                }
+            } catch (\Exception $e) {
+                Log::debug('SSH connection attempt failed', [
+                    'server_host' => $this->ssh->getHost(),
+                    'attempt' => $attempt,
+                    'max_attempts' => $maxAttempts,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+            
+            if ($attempt < $maxAttempts) {
+                $delay = $baseDelay * $attempt; // Exponential backoff: 5s, 10s, 15s, etc.
+                Log::info('SSH connection not ready, waiting before retry', [
+                    'server_host' => $this->ssh->getHost(),
+                    'attempt' => $attempt,
+                    'max_attempts' => $maxAttempts,
+                    'delay_seconds' => $delay,
+                ]);
+                sleep($delay);
+            }
+        }
+        
+        // If we get here, all attempts failed
+        throw new \RuntimeException(
+            "SSH connection failed after {$maxAttempts} attempts. " .
+            "Server: {$this->ssh->getHost()}. " .
+            "Please verify: " .
+            "1. SSH key is added to Hetzner Cloud (HETZNER_SSH_KEY_NAME matches an existing key). " .
+            "2. Server is fully booted and SSH service is running. " .
+            "3. Server firewall allows SSH connections."
+        );
     }
 
     /**
