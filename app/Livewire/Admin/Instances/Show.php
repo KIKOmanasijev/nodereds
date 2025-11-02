@@ -400,6 +400,8 @@ class Show extends Component
     {
         Gate::authorize('delete', $this->instance);
 
+        $this->instance->update(['status' => 'deleting']);
+
         // Dispatch delete job
         DeleteNodeRedInstanceJob::dispatch($this->instance->id, auth()->id());
 
